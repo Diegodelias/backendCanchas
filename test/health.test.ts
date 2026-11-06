@@ -48,7 +48,7 @@ describe('manejo de errores', () => {
     const env = await createTestEnv();
     try {
       // Instancia nueva: las rutas se pueden agregar antes de que el servidor esté listo.
-      const app = await buildApp({ config: env.config, db: env.db });
+      const app = await buildApp({ config: env.config, db: env.db, launcher: env.launcher });
       app.get('/api/_validar', async (req) => z.object({ edad: z.coerce.number().int().min(1) }).parse(req.query));
       const res = await app.inject({ method: 'GET', url: '/api/_validar?edad=-3' });
       expect(res.statusCode).toBe(400);
@@ -64,7 +64,7 @@ describe('manejo de errores', () => {
   it('un error inesperado responde 500 sin filtrar detalles internos', async () => {
     const env = await createTestEnv();
     try {
-      const app = await buildApp({ config: env.config, db: env.db });
+      const app = await buildApp({ config: env.config, db: env.db, launcher: env.launcher });
       app.get('/api/_roto', async () => {
         throw new Error('secreto interno: contraseña=1234');
       });

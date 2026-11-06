@@ -3,10 +3,16 @@ import { z, ZodError } from 'zod';
 import type { Config } from './config.js';
 import type { Database } from './db/client.js';
 import { AppError } from './lib/errors.js';
+import type { FfmpegLauncher } from './modules/live/launcher.js';
+import { liveRoutes } from './modules/live/routes.js';
 
 export interface AppDeps {
   config: Config;
   db: Database;
+  /** Lanzador de ffmpeg; por defecto usa el binario real. Se reemplaza en las pruebas. */
+  launcher?: FfmpegLauncher;
+  /** Destino de los logs; por defecto la salida estándar (y ninguno en pruebas). Permite verificar qué se registra. */
+  logStream?: { write(message: string): void };
 }
 
 export interface ErrorBody {
@@ -19,7 +25,11 @@ const healthQuery = z.object({
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: deps.config.NODE_ENV === 'test' ? false : { level: 'info' },
+    logger: deps.logStream
+      ? { level: 'info', stream: deps.logStream }
+      : deps.config.NODE_ENV === 'test'
+        ? false
+        : { level: 'info' },
     trustProxy: true,
   });
 
@@ -78,6 +88,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         }
         return { status: 'ok' };
       });
+
+      await api.register(liveRoutes, deps);
     },
     { prefix: '/api' },
   );
