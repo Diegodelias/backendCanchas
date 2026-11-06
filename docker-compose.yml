@@ -1,0 +1,33 @@
+# Entorno de desarrollo: API + Postgres propio de Canchas3.
+# Las credenciales de abajo son solo para desarrollo local.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: canchas3
+      POSTGRES_PASSWORD: canchas3
+      POSTGRES_DB: canchas3
+    ports:
+      - "5432:5432"
+    volumes:
+      - canchas3-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canchas3 -d canchas3"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      DATABASE_URL: postgres://canchas3:canchas3@db:5432/canchas3
+    ports:
+      - "3001:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  canchas3-db:
