@@ -14,7 +14,8 @@
     "lint": "tsc --noEmit",
     "migrate": "node-pg-migrate up --envPath .env --migrations-dir migrations",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql",
-    "crear-admin": "tsx --env-file=.env src/cli/crear-admin.ts"
+    "crear-admin": "tsx --env-file=.env src/cli/crear-admin.ts",
+    "crear-club": "tsx --env-file=.env src/cli/crear-club.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",

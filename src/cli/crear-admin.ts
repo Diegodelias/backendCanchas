@@ -10,10 +10,9 @@
 import { parseArgs } from 'node:util';
 import { createPgDatabase } from '../db/client.js';
 import { AdminInputError, createAdmin } from '../modules/auth/admins.js';
-import { DEMO_CLUB_IDS } from '../modules/auth/clubs.js';
 
 const USAGE = `Uso: crear-admin --email <mail> --nombre "<nombre>" --club <id>
-Clubes válidos: ${DEMO_CLUB_IDS.join(', ')}
+El club tiene que existir (si no, el error lista los válidos; se dan de alta con crear-club).
 La contraseña se pide por teclado, o se lee de ADMIN_PASSWORD si no hay terminal.`;
 
 function fail(message: string): never {

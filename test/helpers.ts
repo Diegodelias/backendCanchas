@@ -188,6 +188,7 @@ export async function createDbTestEnv(
     mailer,
     reset: async () => {
       await truncateAuthTables(db);
+      await deleteTestClubs(db);
       mailer.sent.length = 0;
       mailer.failWith = null;
       clock.current = new TestClock().current;
@@ -197,6 +198,14 @@ export async function createDbTestEnv(
       await db.close();
     },
   };
+}
+
+/**
+ * Borra los clubes que crean los tests (id con prefijo `test-`); sus canchas caen por cascada.
+ * Los clubes y canchas iniciales (datos de ejemplo) nunca se tocan.
+ */
+export async function deleteTestClubs(db: Database): Promise<void> {
+  await db.query(`DELETE FROM clubs WHERE id LIKE 'test-%'`);
 }
 
 export async function truncateAuthTables(db: Database): Promise<void> {

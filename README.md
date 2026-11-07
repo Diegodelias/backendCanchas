@@ -1,6 +1,6 @@
 # Backend de Canchas3
 
-API en TypeScript sobre Node con Fastify. Hoy incluye la estructura base (configuración, errores, conexión a Postgres, `GET /api/health`), la **reproducción en vivo de una cámara real** (`GET /api/live/:cameraId/stream`) el **ingreso de admins de club** con mail y contraseña, el **ingreso de jugadores por un link enviado a su mail** y las **jugadas guardadas** de cada jugador. El resto de las funcionalidades (catálogo, partidos guardados) van en changes posteriores.
+API en TypeScript sobre Node con Fastify. Hoy incluye la estructura base (configuración, errores, conexión a Postgres, `GET /api/health`), la **reproducción en vivo de una cámara real** (`GET /api/live/:cameraId/stream`) el **ingreso de admins de club** con mail y contraseña, el **ingreso de jugadores por un link enviado a su mail** las **jugadas guardadas** de cada jugador y los **clubes con sus canchas**, que el admin gestiona desde el panel. El resto de las funcionalidades (horarios y reservas, partidos guardados) van en changes posteriores.
 
 ## Requisitos
 
@@ -88,7 +88,7 @@ npm run crear-admin -- --email ana@club.example --nombre "Ana Pérez" --club est
 docker compose exec api node dist/cli/crear-admin.js --email ana@club.example --nombre "Ana Pérez" --club estacion-norte
 ```
 
-Clubes válidos (los de los datos de ejemplo del frontend): `estacion-norte`, `la-cantera-crespo`, `polideportivo-belgrano`, `parque-sur-caballito`, `arena-nunez`, `terraza-colegiales`. Con un club inexistente, un mail repetido o una contraseña corta, el comando termina con error y no crea nada.
+El club tiene que **existir en la base** (ver «Clubes y canchas»): los de ejemplo son `estacion-norte`, `la-cantera-crespo`, `polideportivo-belgrano`, `parque-sur-caballito`, `arena-nunez` y `terraza-colegiales`, y los nuevos se dan de alta con `crear-club`. Con un club inexistente (el error lista los válidos), un mail repetido o una contraseña corta, el comando termina con error y no crea nada.
 
 ## Acceso de jugadores por mail
 
@@ -127,6 +127,37 @@ Cada jugada es de su dueño: una jugada ajena responde `404`, y los admins de cl
 | `DELETE /api/plays/:id` | `204`; `404` |
 
 `play` es `{ id, matchId, title, category, captureMode, timestamp, isLiveMoment, createdAt }`. El backend no guarda el club, la cancha, el horario ni el video: salen del `matchId` en el frontend, porque los partidos siguen siendo datos de ejemplo (por eso `matchId` es un texto de hasta 100 caracteres, sin validar contra partidos).
+
+## Clubes y canchas
+
+Los clubes y sus canchas viven en la base. Un club se da de alta **por comando** (no hay pantalla ni superadmin); el admin del club gestiona sus canchas desde el panel (`/panel-club`, pestaña «Canchas»), y la landing las lee del listado público.
+
+| Método y ruta | Quién | Respuestas |
+|---|---|---|
+| `GET /api/clubs` | Cualquiera, sin sesión | `200 { clubs }`: los clubes con sus **canchas activas**. Un club sin canchas activas no aparece. Responde con `Cache-Control: no-store`: un cambio del admin se ve al instante. |
+| `GET /api/club/courts` | Admin de club | `200 { club, courts }`: su club y **todas** sus canchas (activas o no) |
+| `POST /api/club/courts` `{ name, sport, price }` | Admin de club | `201 { court }` (queda activa); `400 validation_error`; `409 court_name_taken`; `409 courts_limit_reached` |
+| `PATCH /api/club/courts/:id` `{ name?, sport?, price?, active? }` | Admin de club | `200 { court }`; `400`; `404`; `409 court_name_taken` |
+
+- **Cancha:** `{ id, name, sport, price, active }`. El nombre es obligatorio, de hasta 60 caracteres y **único dentro del club** sin distinguir mayúsculas. El deporte es `Fútbol 5`, `Fútbol 7`, `Fútbol 8` o `Fútbol 11`. El precio es un entero de pesos mayor que cero. Un club tiene hasta **50 canchas**, activas o no.
+- **No se borran:** se desactivan (`active: false`) y se pueden reactivar. No hay `DELETE`.
+- **Cada admin solo accede a su club:** la cancha de otro club responde `404`; un jugador recibe `403` y sin sesión `401`.
+- **Los datos del club** (nombre, zona, ciudad, dirección) los fija el comando `crear-club` o la base: ningún endpoint los edita.
+- **Datos iniciales:** la migración carga 6 clubes y 12 canchas de ejemplo (`estacion-norte`, `la-cantera-crespo`, `polideportivo-belgrano`, `parque-sur-caballito`, `arena-nunez` y `terraza-colegiales`), con los ids que usan los partidos, las cámaras y los carteles QR de ejemplo. Son datos normales: se editan y se desactivan como cualquier otro. En un despliegue real también quedan cargados; para sacarlos del sitio, desactivá sus canchas.
+
+### Dar de alta un club
+
+```bash
+# Desarrollo local (lee DATABASE_URL del .env)
+npm run crear-club -- --id mi-club --nombre "Mi Club" --zona Palermo --ciudad buenos-aires --direccion "Av. Siempreviva 742"
+
+# Dentro del contenedor (con docker compose up corriendo)
+docker compose exec api node dist/cli/crear-club.js --id mi-club --nombre "Mi Club" --zona Palermo --ciudad buenos-aires --direccion "Av. Siempreviva 742"
+```
+
+El identificador usa minúsculas, números y guiones (de 3 a 60 caracteres). La ciudad es una de las que conoce el sitio: `buenos-aires`, `rosario` o `cordoba`. Con un identificador inválido o repetido, una ciudad desconocida o un dato vacío, el comando termina con error y no crea nada.
+
+Después se le asigna un admin con `crear-admin --club mi-club …` (el club tiene que existir; si no, el error lista los válidos), y el admin carga sus canchas en el panel. Hasta que haya una cancha activa, el club no se muestra en el sitio.
 
 ## Cámara en vivo
 
@@ -207,6 +238,7 @@ El destino final son Dokploy y Coolify. En ambos, **la unidad de despliegue es e
 | `npm run migrate` | Aplica las migraciones pendientes |
 | `npm run migrate:create -- <nombre>` | Crea una migración SQL nueva |
 | `npm run crear-admin -- …` | Crea un admin de club (ver «Crear una cuenta de prueba») |
+| `npm run crear-club -- …` | Da de alta un club (ver «Dar de alta un club») |
 
 ### Tests contra la base
 
@@ -254,8 +286,10 @@ backend/
 │   ├── db/client.ts           # conexión a Postgres
 │   ├── db/migrate.ts          # aplica las migraciones al arrancar
 │   ├── cli/crear-admin.ts     # comando para crear admins
+│   ├── cli/crear-club.ts      # comando para dar de alta clubes
 │   ├── lib/errors.ts          # errores de la aplicación
 │   ├── modules/auth/          # ingreso de admins y de jugadores, sesiones y límites
+│   ├── modules/clubs/         # listado público, canchas del admin y alta de clubes
 │   ├── modules/mail/          # envío de mails (consola o SMTP) y mail de acceso
 │   ├── modules/plays/         # jugadas de cada jugador
 │   └── modules/live/          # cámara en vivo

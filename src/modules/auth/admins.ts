@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import type { Database } from '../../db/client.js';
-import { DEMO_CLUB_IDS, isDemoClubId } from './clubs.js';
 import { hashPassword, MIN_PASSWORD_LENGTH } from './passwords.js';
 import { toSessionUser, type SessionUser, type UserRow } from './types.js';
 
@@ -21,6 +20,18 @@ export interface NewAdmin {
 
 const emailSchema = z.email();
 
+async function clubExists(db: Database, clubId: string): Promise<boolean> {
+  const rows = await db.query(`SELECT 1 FROM clubs WHERE id = $1`, [clubId]);
+  return rows.length > 0;
+}
+
+/** Error de club inexistente, con los ids de los clubes que sí existen. */
+async function unknownClub(db: Database, clubId: string): Promise<AdminInputError> {
+  const valid = await db.query<{ id: string }>(`SELECT id FROM clubs ORDER BY created_at, id`);
+  const list = valid.length > 0 ? valid.map((c) => c.id).join(', ') : '(todavía no hay clubes: creá uno con crear-club)';
+  return new AdminInputError(`El club «${clubId}» no existe. Clubes válidos: ${list}.`);
+}
+
 export async function createAdmin(db: Database, input: NewAdmin): Promise<SessionUser> {
   const email = input.email.trim();
   const name = input.name.trim();
@@ -30,11 +41,7 @@ export async function createAdmin(db: Database, input: NewAdmin): Promise<Sessio
     throw new AdminInputError(`El mail «${email}» no tiene un formato válido.`);
   }
   if (!name) throw new AdminInputError('Falta el nombre del admin.');
-  if (!isDemoClubId(clubId)) {
-    throw new AdminInputError(
-      `El club «${clubId}» no existe. Clubes válidos: ${DEMO_CLUB_IDS.join(', ')}.`,
-    );
-  }
+  if (!(await clubExists(db, clubId))) throw await unknownClub(db, clubId);
   if (input.password.length < MIN_PASSWORD_LENGTH) {
     throw new AdminInputError(`La contraseña debe tener ${MIN_PASSWORD_LENGTH} caracteres o más.`);
   }
@@ -52,10 +59,11 @@ export async function createAdmin(db: Database, input: NewAdmin): Promise<Sessio
     );
     return toSessionUser(row!);
   } catch (err) {
+    const code = (err as { code?: string }).code;
     // Otro alta con el mismo mail pudo entrar entre la consulta y el insert.
-    if ((err as { code?: string }).code === '23505') {
-      throw new AdminInputError(`Ya existe un usuario con el mail ${email}.`);
-    }
+    if (code === '23505') throw new AdminInputError(`Ya existe un usuario con el mail ${email}.`);
+    // La clave foránea es la red de seguridad: el club dejó de existir entre la consulta y el insert.
+    if (code === '23503') throw await unknownClub(db, clubId);
     throw err;
   }
 }
