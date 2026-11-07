@@ -8,13 +8,16 @@ export function buildRtspUrl(cam: LiveCameraConfig): string {
 
 /**
  * Argumentos de ffmpeg: lee RTSP por TCP y entrega MP4 fragmentado por la salida estándar,
- * sin transcodificar el video (`-c:v copy`).
+ * sin transcodificar el video (`-c:v copy`). `+discardcorrupt+genpts` descarta los paquetes
+ * dañados que manda la cámara y regenera los timestamps, para que el navegador no corte por error de decodificación.
  */
 export function buildFfmpegArgs(rtspUrl: string): string[] {
   return [
     '-hide_banner',
     '-loglevel',
     'error',
+    '-fflags',
+    '+discardcorrupt+genpts',
     '-rtsp_transport',
     'tcp',
     '-timeout',

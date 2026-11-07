@@ -55,6 +55,7 @@ Las variables de la cámara se leen de `backend/.env` (si existe). No se escribe
 | `LIVE_FIRST_BYTE_TIMEOUT_MS` | Espera máxima del primer byte de video | `20000` |
 | `FFMPEG` | Ruta de ffmpeg si no está en el `PATH` | `ffmpeg` |
 
+- Canal de la cámara (medido en esta cámara): el `201` es el único que sirve (H.264 1920×1080). El `101` es HEVC (no reproduce en navegadores) y el `102`/`202` anuncian H.264 pero con tamaño 0×0 y ffmpeg no obtiene ningún stream de ellos. Se deja el `201`.
 - Las cuatro primeras (`CAM_USER`, `CAM_PASS`, `CAM_HOST`, `LIVE_CAMERA_ID`) son **todo o nada**: sin ninguna, el backend arranca igual y la ruta responde "La cámara en vivo no está configurada" (503); con algunas pero no todas, el arranque falla nombrando las que faltan.
 - **Solo el canal `201` está verificado** (H.264, se reproduce sin transcodificar). El `101` es HEVC y el navegador no lo reproduce: el reproductor mostrará su estado de error.
 - Cada espectador abre su propio ffmpeg. Al superar `LIVE_MAX_VIEWERS` la ruta responde 503 con "Hay muchos espectadores viendo esta cámara".

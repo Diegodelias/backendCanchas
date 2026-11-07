@@ -44,6 +44,13 @@ describe('buildFfmpegArgs', () => {
     expect(args[args.length - 1]).toBe('pipe:1');
   });
 
+  it('descarta paquetes corruptos antes de la entrada', () => {
+    const i = args.indexOf('-fflags');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('+discardcorrupt+genpts');
+    expect(i).toBeLessThan(args.indexOf('-i'));
+  });
+
   it('lee por TCP y pasa la URL como entrada', () => {
     expect(args[args.indexOf('-rtsp_transport') + 1]).toBe('tcp');
     expect(args[args.indexOf('-i') + 1]).toBe('rtsp://x/y');
