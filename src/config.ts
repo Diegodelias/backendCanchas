@@ -29,6 +29,11 @@ const schema = z
 
     // Cookie de sesión con `Secure` (solo viaja por HTTPS). Vacía: sí en production, no en el resto.
     SESSION_COOKIE_SECURE: z.preprocess(emptyToUndefined, z.enum(['true', 'false']).optional()),
+
+    // Mails de acceso. PUBLIC_APP_URL y SMTP_URL son obligatorias en producción (ver superRefine).
+    PUBLIC_APP_URL: z.preprocess(emptyToUndefined, z.url({ error: 'PUBLIC_APP_URL debe ser una URL (ej. https://canchas3.example).' }).optional()),
+    SMTP_URL: optionalString,
+    MAIL_FROM: z.preprocess(emptyToUndefined, z.string().default('Canchas3 <no-reply@canchas3.example>')),
   })
   .superRefine((cfg, ctx) => {
     // La cámara es todo o nada: sin ninguna variable no hay cámara; con algunas, es un error.
@@ -41,9 +46,23 @@ const schema = z
         message: `Configuración de cámara incompleta: faltan ${missing.join(', ')}.`,
       });
     }
+
+    // En producción, sin SMTP los links de acceso de los jugadores quedarían impresos en el log.
+    if (cfg.NODE_ENV === 'production') {
+      for (const name of ['PUBLIC_APP_URL', 'SMTP_URL'] as const) {
+        if (cfg[name] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message: `Falta ${name}: es obligatoria en producción para enviar los links de acceso.`,
+          });
+        }
+      }
+    }
   })
   .transform((cfg) => ({
     ...cfg,
+    PUBLIC_APP_URL: (cfg.PUBLIC_APP_URL ?? 'http://localhost:3000').replace(/\/+$/, ''),
     SESSION_COOKIE_SECURE:
       cfg.SESSION_COOKIE_SECURE === undefined
         ? cfg.NODE_ENV === 'production'

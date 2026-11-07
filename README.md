@@ -1,6 +1,6 @@
 # Backend de Canchas3
 
-API en TypeScript sobre Node con Fastify. Hoy incluye la estructura base (configuración, errores, conexión a Postgres, `GET /api/health`), la **reproducción en vivo de una cámara real** (`GET /api/live/:cameraId/stream`) y el **ingreso de admins de club** con mail y contraseña. El resto de las funcionalidades (catálogo, jugadas, acceso del jugador) van en changes posteriores.
+API en TypeScript sobre Node con Fastify. Hoy incluye la estructura base (configuración, errores, conexión a Postgres, `GET /api/health`), la **reproducción en vivo de una cámara real** (`GET /api/live/:cameraId/stream`) el **ingreso de admins de club** con mail y contraseña, el **ingreso de jugadores por un link enviado a su mail** y las **jugadas guardadas** de cada jugador. El resto de las funcionalidades (catálogo, partidos guardados) van en changes posteriores.
 
 ## Requisitos
 
@@ -75,6 +75,43 @@ docker compose exec api node dist/cli/crear-admin.js --email ana@club.example --
 ```
 
 Clubes válidos (los de los datos de ejemplo del frontend): `estacion-norte`, `la-cantera-crespo`, `polideportivo-belgrano`, `parque-sur-caballito`, `arena-nunez`, `terraza-colegiales`. Con un club inexistente, un mail repetido o una contraseña corta, el comando termina con error y no crea nada.
+
+## Acceso de jugadores por mail
+
+El jugador no tiene contraseña: pone su mail y recibe un link de un solo uso que vence a los **15 minutos**. El link apunta a la página `/acceso` del frontend (`<PUBLIC_APP_URL>/acceso?token=…`), que pide confirmar con un botón; recién ahí el backend consume el link. Así un programa del correo que abre el link antes que la persona no lo gasta.
+
+| Método y ruta | Respuestas |
+|---|---|
+| `POST /api/auth/player/request-link` `{ email }` | `202 { message }` (**el mismo para cualquier mail válido**, tenga o no cuenta, incluso si es de un admin); `429 too_many_requests` (3 pedidos por mail cada 15 minutos); `400 validation_error` |
+| `POST /api/auth/player/confirm` `{ token }` | `200 { user }` con la cookie `c3_session`; `410 link_used`; `410 link_expired` (vencido o inexistente) |
+
+- La cuenta de un mail nuevo se crea al confirmar el link, solo con el mail (`user.name` es `null`). Con el mail de un admin no se envía nada.
+- La sesión del jugador dura **30 días sin uso** y se renueva mientras entra al sitio. Puede tener varias a la vez; `POST /api/auth/logout` cierra solo la del dispositivo actual.
+- Pedir un link nuevo no invalida los anteriores; cada uno vence solo.
+- El mail se envía en segundo plano, para que la respuesta no tarde distinto según el caso. Si el envío falla, solo se registra el tipo de error (sin el link ni el mail).
+
+### Mails en desarrollo
+
+| `SMTP_URL` | Qué pasa |
+|---|---|
+| vacía (`npm run dev` sin Docker) | El link **se imprime en el log del backend** y no se envía nada |
+| `smtp://mailpit:1025` (`docker compose`) | Se envía a **Mailpit**, un buzón de pruebas: abrí `http://localhost:8025` para ver los mails y tocar el link (`MAILPIT_UI_PORT` cambia el puerto) |
+| una URL de un proveedor | Se envía de verdad |
+
+Variables: `PUBLIC_APP_URL` (dirección del frontend; por defecto `http://localhost:3000`), `SMTP_URL` y `MAIL_FROM` (por defecto `Canchas3 <no-reply@canchas3.example>`). **En producción `PUBLIC_APP_URL` y `SMTP_URL` son obligatorias**: sin ellas la API no arranca, para no dejar en el log los links de acceso de los jugadores. Guardá `SMTP_URL` como secreto de la plataforma.
+
+## Jugadas
+
+Cada jugada es de su dueño: una jugada ajena responde `404`, y los admins de club reciben `403`. Todas las rutas piden sesión de jugador (`401` sin sesión).
+
+| Método y ruta | Respuestas |
+|---|---|
+| `GET /api/plays` | `200 { plays }`, las del jugador, de la más reciente a la más antigua |
+| `POST /api/plays` `{ matchId, title, category?, captureMode?, timestamp, isLiveMoment? }` | `201 { play }`; `409 plays_limit_reached` (tope de 200 por jugador); `400 validation_error` |
+| `PATCH /api/plays/:id` `{ title?, category? }` | `200 { play }`; `404` |
+| `DELETE /api/plays/:id` | `204`; `404` |
+
+`play` es `{ id, matchId, title, category, captureMode, timestamp, isLiveMoment, createdAt }`. El backend no guarda el club, la cancha, el horario ni el video: salen del `matchId` en el frontend, porque los partidos siguen siendo datos de ejemplo (por eso `matchId` es un texto de hasta 100 caracteres, sin validar contra partidos).
 
 ## Cámara en vivo
 
@@ -177,6 +214,9 @@ En PowerShell: `$env:TEST_DATABASE_URL="postgres://canchas3:canchas3@localhost:5
 | `HOST` | No | `0.0.0.0` |
 | `NODE_ENV` | No | `development` |
 | `SESSION_COOKIE_SECURE` | No | `true` en `production`, `false` en el resto |
+| `PUBLIC_APP_URL` | En producción | `http://localhost:3000` |
+| `SMTP_URL` | En producción | vacía (el link se imprime en el log) |
+| `MAIL_FROM` | No | `Canchas3 <no-reply@canchas3.example>` |
 
 Las variables de la cámara están en la sección "Cámara en vivo". Si falta `DATABASE_URL`, el arranque termina con un mensaje que lo indica.
 
@@ -200,7 +240,9 @@ backend/
 │   ├── db/migrate.ts          # aplica las migraciones al arrancar
 │   ├── cli/crear-admin.ts     # comando para crear admins
 │   ├── lib/errors.ts          # errores de la aplicación
-│   ├── modules/auth/          # ingreso de admins, sesiones y límite de intentos
+│   ├── modules/auth/          # ingreso de admins y de jugadores, sesiones y límites
+│   ├── modules/mail/          # envío de mails (consola o SMTP) y mail de acceso
+│   ├── modules/plays/         # jugadas de cada jugador
 │   └── modules/live/          # cámara en vivo
 │       ├── routes.ts          #   GET /api/live/:cameraId/stream
 │       ├── rtsp.ts            #   URL RTSP, argumentos de ffmpeg y sanitizado de logs

@@ -25,18 +25,34 @@ describe('migraciones', () => {
     await db.query('CREATE SCHEMA public');
 
     const applied = await runMigrations(url);
-    expect(applied).toEqual(['1762500000000_acceso-admin']);
+    expect(applied).toEqual(['1762500000000_acceso-admin', '1762600000000_acceso-jugador']);
 
     const tables = await db.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name`,
     );
-    expect(tables.map((t) => t.table_name)).toEqual(['login_attempts', 'pgmigrations', 'sessions', 'users']);
+    expect(tables.map((t) => t.table_name)).toEqual([
+      'link_requests',
+      'login_attempts',
+      'login_tokens',
+      'pgmigrations',
+      'plays',
+      'sessions',
+      'users',
+    ]);
   });
 
   it('el check impide un admin sin club o sin contraseña', async () => {
     await expect(
       db.query(`INSERT INTO users (email, name, role) VALUES ('a@club.example', 'A', 'club_admin')`),
     ).rejects.toThrow(/users_club_admin_needs_club_and_password/);
+  });
+
+  it('un jugador se puede crear sin nombre, pero un admin sigue necesitando club y contraseña', async () => {
+    await db.query(`INSERT INTO users (email, role) VALUES ('jugador@mail.example', 'player')`);
+    await expect(
+      db.query(`INSERT INTO users (email, name, role) VALUES ('b@club.example', 'B', 'club_admin')`),
+    ).rejects.toThrow(/users_club_admin_needs_club_and_password/);
+    await db.query(`DELETE FROM users`);
   });
 
   it('un segundo arranque no aplica nada', async () => {

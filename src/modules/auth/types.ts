@@ -4,7 +4,8 @@ export type Role = 'player' | 'club_admin';
 export interface SessionUser {
   id: string;
   email: string;
-  name: string;
+  /** null en los jugadores, que se crean solo con el mail. */
+  name: string | null;
   role: Role;
   clubId: string | null;
 }
@@ -12,7 +13,7 @@ export interface SessionUser {
 export interface UserRow {
   id: string;
   email: string;
-  name: string;
+  name: string | null;
   role: Role;
   club_id: string | null;
   password_hash: string | null;

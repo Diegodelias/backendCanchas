@@ -5,6 +5,8 @@ import type { Config } from './config.js';
 import type { Database } from './db/client.js';
 import { AppError } from './lib/errors.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { createMailer, type Mailer } from './modules/mail/mailer.js';
+import { playsRoutes } from './modules/plays/routes.js';
 import type { FfmpegLauncher } from './modules/live/launcher.js';
 import { liveRoutes } from './modules/live/routes.js';
 
@@ -15,6 +17,8 @@ export interface AppDeps {
   launcher?: FfmpegLauncher;
   /** Destino de los logs; por defecto la salida estándar (y ninguno en pruebas). Permite verificar qué se registra. */
   logStream?: { write(message: string): void };
+  /** Envío de mails; por defecto SMTP si hay SMTP_URL y, si no, la consola. Las pruebas lo reemplazan. */
+  mailer?: Mailer;
   /** Reloj; por defecto la hora real. Las pruebas lo adelantan para vencer sesiones y bloqueos. */
   now?: () => Date;
 }
@@ -38,6 +42,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   await app.register(cookie);
+
+  // Los módulos reciben el mismo mailer que usa la app (el de las pruebas, si se inyectó).
+  deps = { ...deps, mailer: deps.mailer ?? createMailer(deps.config, app.log) };
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
@@ -97,6 +104,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
       await api.register(liveRoutes, deps);
       await api.register(authRoutes, deps);
+      await api.register(playsRoutes, deps);
     },
     { prefix: '/api' },
   );

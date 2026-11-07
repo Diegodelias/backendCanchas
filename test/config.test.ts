@@ -82,3 +82,37 @@ describe('configuración de la cámara', () => {
     expect(() => loadConfig({ ...base, LIVE_MAX_VIEWERS: '0' })).toThrowError(/LIVE_MAX_VIEWERS/);
   });
 });
+
+describe('configuración de mails de acceso', () => {
+  const prod = { ...base, NODE_ENV: 'production' };
+
+  it('fuera de producción usa valores por defecto y la consola', () => {
+    const config = loadConfig(base);
+    expect(config.PUBLIC_APP_URL).toBe('http://localhost:3000');
+    expect(config.SMTP_URL).toBeUndefined();
+    expect(config.MAIL_FROM).toBe('Canchas3 <no-reply@canchas3.example>');
+  });
+
+  it('en producción sin SMTP_URL falla nombrándola', () => {
+    expect(() => loadConfig({ ...prod, PUBLIC_APP_URL: 'https://canchas3.example' })).toThrowError(/SMTP_URL/);
+  });
+
+  it('en producción sin PUBLIC_APP_URL falla nombrándola', () => {
+    expect(() => loadConfig({ ...prod, SMTP_URL: 'smtp://smtp.example:587' })).toThrowError(/PUBLIC_APP_URL/);
+  });
+
+  it('en producción con las dos es válida y quita la barra final', () => {
+    const config = loadConfig({
+      ...prod,
+      PUBLIC_APP_URL: 'https://canchas3.example/',
+      SMTP_URL: 'smtp://smtp.example:587',
+      MAIL_FROM: 'Canchas3 <hola@canchas3.example>',
+    });
+    expect(config.PUBLIC_APP_URL).toBe('https://canchas3.example');
+    expect(config.MAIL_FROM).toBe('Canchas3 <hola@canchas3.example>');
+  });
+
+  it('rechaza una PUBLIC_APP_URL que no es una URL', () => {
+    expect(() => loadConfig({ ...base, PUBLIC_APP_URL: 'no-es-url' })).toThrowError(/PUBLIC_APP_URL/);
+  });
+});

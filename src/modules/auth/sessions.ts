@@ -5,10 +5,12 @@ import { toSessionUser, type Role, type SessionUser, type UserRow } from './type
 export const SESSION_COOKIE = 'c3_session';
 
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 
-/** Vida de la sesión sin uso, por rol. El change 2 agrega la del jugador. */
-const SESSION_TTL_MS: Partial<Record<Role, number>> = {
+/** Vida de la sesión sin uso, por rol. */
+const SESSION_TTL_MS: Record<Role, number> = {
   club_admin: 8 * HOUR,
+  player: 30 * DAY,
 };
 
 /** Cada cuánto se renueva una sesión en uso (evita escribir en cada pedido). */
@@ -19,9 +21,7 @@ export function hashToken(token: string): string {
 }
 
 export function sessionTtlMs(role: Role): number {
-  const ttl = SESSION_TTL_MS[role];
-  if (ttl === undefined) throw new Error(`El rol ${role} todavía no tiene sesiones.`);
-  return ttl;
+  return SESSION_TTL_MS[role];
 }
 
 /** Crea la sesión y devuelve el token que va en la cookie (en la base queda solo su hash). */
@@ -55,7 +55,6 @@ export async function resolveSession(
   const row = rows[0];
   if (!row) return null;
   const ttl = SESSION_TTL_MS[row.role];
-  if (ttl === undefined) return null;
 
   if (now.getTime() - new Date(row.last_used_at).getTime() > RENEW_AFTER_MS) {
     await db.query(`UPDATE sessions SET last_used_at = $2, expires_at = $3 WHERE id = $1`, [

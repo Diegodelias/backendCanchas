@@ -18,6 +18,12 @@ services:
       timeout: 3s
       retries: 10
 
+  # Buzón de pruebas: recibe los mails de acceso sin entregarlos a nadie. Interfaz web en :8025.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+
   api:
     build: .
     # Variables de la cámara (CAM_*, LIVE_*): opcionales; si no existe backend/.env, la cámara queda sin configurar.
@@ -29,12 +35,17 @@ services:
       PORT: "3100"
       # Esta línea tiene prioridad sobre el .env: dentro de Docker la base se llama "db".
       DATABASE_URL: postgres://canchas3:canchas3@db:5432/canchas3
+      # Los links de acceso se envían al Mailpit del compose y apuntan al frontend de desarrollo.
+      SMTP_URL: smtp://mailpit:1025
+      PUBLIC_APP_URL: http://localhost:3000
     ports:
       # Puerto del host; se puede cambiar con API_PORT si el 3100 está ocupado (p. ej. por el PoC de RTSP).
       - "${API_PORT:-3100}:3100"
     depends_on:
       db:
         condition: service_healthy
+      mailpit:
+        condition: service_started
 
 volumes:
   canchas3-db:

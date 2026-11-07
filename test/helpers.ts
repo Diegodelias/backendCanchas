@@ -8,6 +8,7 @@ import { loadConfig, type Config } from '../src/config.js';
 import { createPgDatabase, type Database } from '../src/db/client.js';
 import { runMigrations } from '../src/db/migrate.js';
 import type { FfmpegLauncher, FfmpegProcess } from '../src/modules/live/launcher.js';
+import type { MailMessage, Mailer } from '../src/modules/mail/mailer.js';
 
 export interface FakeDatabase extends Database {
   /** Permite simular que la base deja de responder. */
@@ -140,29 +141,55 @@ export class TestClock {
   }
 }
 
+/** Mailer falso: guarda lo "enviado" para que los tests lo lean. */
+export class FakeMailer implements Mailer {
+  readonly sent: MailMessage[] = [];
+  /** Si no es null, `send` falla con este error (simula un SMTP caído). */
+  failWith: Error | null = null;
+
+  async send(message: MailMessage): Promise<void> {
+    if (this.failWith) throw this.failWith;
+    this.sent.push(message);
+  }
+
+  /** Link de acceso del último mail enviado a ese destinatario, o null. */
+  lastLinkTo(email: string): string | null {
+    const mail = [...this.sent].reverse().find((m) => m.to.toLowerCase() === email.toLowerCase());
+    return mail?.text.match(/https?:\/\/\S+/)?.[0] ?? null;
+  }
+}
+
 export interface DbTestEnv {
   app: FastifyInstance;
   db: Database;
   clock: TestClock;
+  mailer: FakeMailer;
   /** Vacía las tablas de auth (se llama antes de cada caso). */
   reset: () => Promise<void>;
   close: () => Promise<void>;
 }
 
 /** App contra la base real de prueba: aplica migraciones y devuelve un entorno con reloj manual. */
-export async function createDbTestEnv(overrides: Record<string, string> = {}): Promise<DbTestEnv> {
+export async function createDbTestEnv(
+  overrides: Record<string, string> = {},
+  logStream?: { write(message: string): void },
+): Promise<DbTestEnv> {
   const url = requireTestDatabaseUrl();
   await runMigrations(url);
   const db = createPgDatabase(url);
   const clock = new TestClock();
+  const mailer = new FakeMailer();
   const config = testConfig({ DATABASE_URL: url, ...overrides });
-  const app = await buildApp({ config, db, launcher: new FakeLauncher(), now: clock.now });
+  const app = await buildApp({ config, db, launcher: new FakeLauncher(), now: clock.now, mailer, logStream });
   return {
     app,
     db,
     clock,
+    mailer,
     reset: async () => {
       await truncateAuthTables(db);
+      mailer.sent.length = 0;
+      mailer.failWith = null;
       clock.current = new TestClock().current;
     },
     close: async () => {
@@ -173,7 +200,7 @@ export async function createDbTestEnv(overrides: Record<string, string> = {}): P
 }
 
 export async function truncateAuthTables(db: Database): Promise<void> {
-  await db.query('TRUNCATE login_attempts, sessions, users RESTART IDENTITY CASCADE');
+  await db.query('TRUNCATE plays, link_requests, login_tokens, login_attempts, sessions, users RESTART IDENTITY CASCADE');
 }
 
 /** Levanta el servidor en un puerto libre y devuelve la dirección base. */
