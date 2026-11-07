@@ -25,7 +25,11 @@ describe('migraciones', () => {
     await db.query('CREATE SCHEMA public');
 
     const applied = await runMigrations(url);
-    expect(applied).toEqual(['1762500000000_acceso-admin', '1762600000000_acceso-jugador']);
+    expect(applied).toEqual([
+      '1762500000000_acceso-admin',
+      '1762600000000_acceso-jugador',
+      '1762700000000_recuperar-contrasena',
+    ]);
 
     const tables = await db.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name`,
@@ -53,6 +57,19 @@ describe('migraciones', () => {
       db.query(`INSERT INTO users (email, name, role) VALUES ('b@club.example', 'B', 'club_admin')`),
     ).rejects.toThrow(/users_club_admin_needs_club_and_password/);
     await db.query(`DELETE FROM users`);
+  });
+
+  it('los links y los pedidos llevan un propósito, con acceso por defecto', async () => {
+    await db.query(`INSERT INTO login_tokens (email, token_hash, expires_at) VALUES ('a@x.example', 'h1', now())`);
+    const [row] = await db.query<{ purpose: string }>(`SELECT purpose FROM login_tokens WHERE token_hash = 'h1'`);
+    expect(row!.purpose).toBe('access');
+    await expect(
+      db.query(`INSERT INTO login_tokens (email, token_hash, expires_at, purpose) VALUES ('a@x.example', 'h2', now(), 'otro')`),
+    ).rejects.toThrow(/login_tokens_purpose_check/);
+    await expect(
+      db.query(`INSERT INTO link_requests (email, ip, purpose) VALUES ('a@x.example', '1.1.1.1', 'otro')`),
+    ).rejects.toThrow(/link_requests_purpose_check/);
+    await db.query(`DELETE FROM login_tokens`);
   });
 
   it('un segundo arranque no aplica nada', async () => {

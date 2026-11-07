@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppDeps } from '../../app.js';
 import { AppError } from '../../lib/errors.js';
 import { accessEmail } from '../mail/accessEmail.js';
+import { passwordResetEmail } from '../mail/passwordResetEmail.js';
 import { isLoginBlocked, pruneOldAttempts, recordFailedLogin } from './attempts.js';
 import {
   consumeLoginToken,
@@ -10,9 +11,10 @@ import {
   isLinkRequestBlocked,
   pruneOldLinks,
   recordLinkRequest,
+  whyUnusable,
 } from './links.js';
-import { verifyAgainstDummy, verifyPassword } from './passwords.js';
-import { createSession, deleteSession, resolveSession, SESSION_COOKIE } from './sessions.js';
+import { hashPassword, MIN_PASSWORD_LENGTH, verifyAgainstDummy, verifyPassword } from './passwords.js';
+import { createSession, deleteSession, hashToken, resolveSession, SESSION_COOKIE } from './sessions.js';
 import { toSessionUser, type UserRow } from './types.js';
 
 const loginBody = z.object({
@@ -31,6 +33,18 @@ const confirmBody = z.object({
 /** Mismo texto para jugador existente, mail nuevo y mail de admin: no revela qué cuentas existen. */
 const LINK_REQUESTED_MESSAGE =
   'Si el mail está bien escrito, te enviamos un link de acceso. Revisá tu bandeja de entrada y el correo no deseado. El link vence en 15 minutos.';
+
+const resetPasswordBody = z.object({
+  token: z.string().min(1, 'Falta el link de recuperación.').max(200),
+  password: z
+    .string()
+    .min(MIN_PASSWORD_LENGTH, `La contraseña debe tener ${MIN_PASSWORD_LENGTH} caracteres o más.`)
+    .max(1024, 'La contraseña es demasiado larga.'),
+});
+
+/** Mismo texto para admin, jugador y mail sin cuenta: no revela qué cuentas existen. */
+const RESET_REQUESTED_MESSAGE =
+  'Si el mail es de un administrador de club, te enviamos un link para elegir una contraseña nueva. Revisá tu bandeja de entrada y el correo no deseado. El link vence en 15 minutos.';
 
 const TOO_MANY_LINK_REQUESTS = () =>
   new AppError(429, 'too_many_requests', 'Pediste demasiados links. Esperá 15 minutos y probá de nuevo.');
@@ -101,16 +115,16 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     const at = now();
 
     await pruneOldLinks(db, at);
-    if (await isLinkRequestBlocked(db, email, at)) throw TOO_MANY_LINK_REQUESTS();
+    if (await isLinkRequestBlocked(db, 'access', email, at)) throw TOO_MANY_LINK_REQUESTS();
     // Se cuenta todo pedido, se envíe o no un link: si no, el tope delataría los mails de admin.
-    await recordLinkRequest(db, email, req.ip, at);
+    await recordLinkRequest(db, 'access', email, req.ip, at);
 
     const [existing] = await db.query<{ role: string }>(
       `SELECT role FROM users WHERE lower(email) = lower($1)`,
       [email],
     );
     if (existing?.role !== 'club_admin') {
-      const token = await createLoginToken(db, email, at);
+      const token = await createLoginToken(db, 'access', email, at);
       const link = `${config.PUBLIC_APP_URL}/acceso?token=${encodeURIComponent(token)}`;
       // En segundo plano: esperar el envío haría que «se envió» tardara más que «no se envió nada».
       void mailer.send(accessEmail(email, link)).catch((err: unknown) => {
@@ -127,7 +141,7 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     const { token } = confirmBody.parse(req.body);
     const at = now();
 
-    const consumed = await consumeLoginToken(db, token, at);
+    const consumed = await consumeLoginToken(db, 'access', token, at);
     if (!consumed.ok) throw consumed.reason === 'used' ? LINK_USED() : LINK_EXPIRED();
 
     // La cuenta de un mail nuevo se crea acá; ON CONFLICT cubre dos confirmaciones del mismo mail a la vez.
@@ -143,6 +157,64 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     const sessionToken = await createSession(db, user.id, user.role, at);
     reply.setCookie(SESSION_COOKIE, sessionToken, cookieOptions);
     return { user: toSessionUser(user) };
+  });
+
+  // POST /api/auth/admin/request-reset -> 202 con el mismo cuerpo para cualquier mail válido.
+  app.post('/auth/admin/request-reset', async (req, reply) => {
+    const { email: typed } = requestLinkBody.parse(req.body);
+    const email = typed.toLowerCase();
+    const at = now();
+
+    await pruneOldLinks(db, at);
+    // Su propio límite, independiente del de los links de acceso; cuenta todo pedido, se envíe o no un link.
+    if (await isLinkRequestBlocked(db, 'password_reset', email, at)) throw TOO_MANY_LINK_REQUESTS();
+    await recordLinkRequest(db, 'password_reset', email, req.ip, at);
+
+    const [admin] = await db.query<{ id: string }>(
+      `SELECT id FROM users WHERE lower(email) = lower($1) AND role = 'club_admin'`,
+      [email],
+    );
+    if (admin) {
+      const token = await createLoginToken(db, 'password_reset', email, at);
+      const link = `${config.PUBLIC_APP_URL}/recuperar?token=${encodeURIComponent(token)}`;
+      // En segundo plano, igual que el acceso del jugador: el tiempo de respuesta no distingue los casos.
+      void mailer.send(passwordResetEmail(email, link)).catch((err: unknown) => {
+        const code = (err as { code?: string }).code;
+        app.log.error({ errorName: (err as Error).name, code }, 'No se pudo enviar el mail de recuperación');
+      });
+    }
+    return reply.status(202).send({ message: RESET_REQUESTED_MESSAGE });
+  });
+
+  // POST /api/auth/admin/reset-password -> 204; no abre sesión. 410 si el link no sirve.
+  app.post('/auth/admin/reset-password', async (req, reply) => {
+    // La contraseña se valida ANTES de tocar el link: una corta no lo gasta y se puede reintentar.
+    const { token, password } = resetPasswordBody.parse(req.body);
+    const at = now();
+    const passwordHash = await hashPassword(password);
+
+    // Consumir el link, cambiar el hash y cerrar todas las sesiones del admin: una sola sentencia,
+    // así que o pasa todo o no pasa nada, y dos pedidos con el mismo link no cambian la clave dos veces.
+    const [result] = await db.query<{ consumed: number; changed: number }>(
+      `WITH t AS (
+         UPDATE login_tokens SET used_at = $2::timestamptz
+          WHERE token_hash = $1 AND purpose = 'password_reset' AND used_at IS NULL AND expires_at > $2::timestamptz
+          RETURNING email
+       ), u AS (
+         UPDATE users SET password_hash = $3
+          WHERE lower(email) = (SELECT lower(email) FROM t) AND role = 'club_admin'
+          RETURNING id
+       ), s AS (
+         DELETE FROM sessions WHERE user_id IN (SELECT id FROM u)
+       )
+       SELECT (SELECT count(*)::int FROM t) AS consumed, (SELECT count(*)::int FROM u) AS changed`,
+      [hashToken(token), at, passwordHash],
+    );
+
+    if ((result?.changed ?? 0) > 0) return reply.status(204).send();
+    // El link se consumió pero ya no hay un admin con ese mail: no cambió nada.
+    if ((result?.consumed ?? 0) > 0) throw LINK_EXPIRED();
+    throw (await whyUnusable(db, 'password_reset', hashToken(token))) === 'used' ? LINK_USED() : LINK_EXPIRED();
   });
 
   // POST /api/auth/logout -> 204; invalida la sesión en la base (funciona aunque no haya sesión).

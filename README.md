@@ -55,12 +55,26 @@ Un admin ingresa con mail y contraseña y recibe una cookie de sesión `c3_sessi
 | Método y ruta | Respuestas |
 |---|---|
 | `POST /api/auth/admin/login` `{ email, password }` | `200 { user }` con la cookie; `401 invalid_credentials` (mismo error si el mail no existe o la clave es incorrecta); `429 too_many_attempts`; `400 validation_error` |
+| `POST /api/auth/admin/request-reset` `{ email }` | `202 { message }` (**el mismo para cualquier mail válido**, sea de un admin, de un jugador o sin cuenta); `429 too_many_requests`; `400 validation_error` |
+| `POST /api/auth/admin/reset-password` `{ token, password }` | `204` (no abre sesión); `410 link_used`; `410 link_expired`; `400 validation_error` (contraseña de menos de 10 caracteres: **no consume el link**) |
 | `POST /api/auth/logout` | `204`; borra la sesión y la cookie |
 | `GET /api/auth/me` | `200 { user }` o `200 { user: null }` |
 
 `user` es `{ id, email, name, role, clubId }`. Después de **5 intentos fallidos en 15 minutos**, por cuenta o por IP, el ingreso responde `429` aunque la contraseña sea correcta, hasta que pase la ventana.
 
 > La IP sale de `X-Forwarded-For` (`trustProxy`). Es confiable solo si la API se publica detrás del proxy (Vite en desarrollo, nginx en producción) y no directamente.
+
+### Recuperar la contraseña
+
+Un admin que olvidó su contraseña la recupera por mail:
+
+1. En el formulario de admin toca «Olvidé mi contraseña» y pone su mail. La respuesta es siempre la misma; **solo un mail de admin recibe el link**.
+2. El link (`<PUBLIC_APP_URL>/recuperar?token=…`) vale **una sola vez y 15 minutos**, y abre una página donde elige la contraseña nueva (10 caracteres o más). Una contraseña corta no gasta el link.
+3. Al cambiarla, **se cierran todas sus sesiones** y no se abre una nueva: ingresa de nuevo con la contraseña nueva. Los intentos fallidos de ingreso no se borran: si estaba bloqueado, la espera de 15 minutos sigue.
+
+Se permiten 3 pedidos por mail cada 15 minutos (cuentan todos, se envíe o no un link), con un límite **independiente** del de los links de acceso de jugadores. En desarrollo el mail se ve en Mailpit (`http://localhost:8025`).
+
+> No hay un comando para cambiar la contraseña de un admin que ya existe. Si perdió también el acceso a su mail, hay que borrar su usuario en la base y volver a crearlo con `crear-admin`.
 
 ### Crear una cuenta de prueba
 
@@ -88,6 +102,7 @@ El jugador no tiene contraseña: pone su mail y recibe un link de un solo uso qu
 - La cuenta de un mail nuevo se crea al confirmar el link, solo con el mail (`user.name` es `null`). Con el mail de un admin no se envía nada.
 - La sesión del jugador dura **30 días sin uso** y se renueva mientras entra al sitio. Puede tener varias a la vez; `POST /api/auth/logout` cierra solo la del dispositivo actual.
 - Pedir un link nuevo no invalida los anteriores; cada uno vence solo.
+- Los links de acceso y los de recuperación de contraseña comparten tablas pero llevan un propósito (`access` o `password_reset`): uno no sirve para el otro.
 - El mail se envía en segundo plano, para que la respuesta no tarde distinto según el caso. Si el envío falla, solo se registra el tipo de error (sin el link ni el mail).
 
 ### Mails en desarrollo
