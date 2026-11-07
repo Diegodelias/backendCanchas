@@ -1,8 +1,10 @@
+import cookie from '@fastify/cookie';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z, ZodError } from 'zod';
 import type { Config } from './config.js';
 import type { Database } from './db/client.js';
 import { AppError } from './lib/errors.js';
+import { authRoutes } from './modules/auth/routes.js';
 import type { FfmpegLauncher } from './modules/live/launcher.js';
 import { liveRoutes } from './modules/live/routes.js';
 
@@ -13,6 +15,8 @@ export interface AppDeps {
   launcher?: FfmpegLauncher;
   /** Destino de los logs; por defecto la salida estándar (y ninguno en pruebas). Permite verificar qué se registra. */
   logStream?: { write(message: string): void };
+  /** Reloj; por defecto la hora real. Las pruebas lo adelantan para vencer sesiones y bloqueos. */
+  now?: () => Date;
 }
 
 export interface ErrorBody {
@@ -32,6 +36,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         : { level: 'info' },
     trustProxy: true,
   });
+
+  await app.register(cookie);
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
@@ -90,6 +96,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       });
 
       await api.register(liveRoutes, deps);
+      await api.register(authRoutes, deps);
     },
     { prefix: '/api' },
   );

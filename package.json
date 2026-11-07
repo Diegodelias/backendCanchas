@@ -11,10 +11,16 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "migrate": "node-pg-migrate up --envPath .env --migrations-dir migrations",
+    "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql",
+    "crear-admin": "tsx --env-file=.env src/cli/crear-admin.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "argon2": "^0.45.2",
     "fastify": "^5.12.8",
+    "node-pg-migrate": "^9.0.0",
     "pg": "^8.23.1",
     "zod": "^4.6.7"
   },

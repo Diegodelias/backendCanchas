@@ -14,6 +14,8 @@ RUN apk add --no-cache ffmpeg
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# La API aplica estas migraciones al arrancar, antes de abrir el puerto.
+COPY migrations ./migrations
 USER node
 EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

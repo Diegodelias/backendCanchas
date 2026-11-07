@@ -1,11 +1,23 @@
 import { buildApp } from './app.js';
 import { loadConfig, type Config } from './config.js';
 import { createPgDatabase } from './db/client.js';
+import { runMigrations } from './db/migrate.js';
 
 async function main() {
   let config: Config;
   try {
     config = loadConfig();
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
+  }
+
+  // El esquema se pone al día antes de abrir el puerto; si falla, la API no arranca.
+  try {
+    const applied = await runMigrations(config.DATABASE_URL);
+    console.log(
+      applied.length > 0 ? `Migraciones aplicadas: ${applied.join(', ')}` : 'Migraciones: nada pendiente',
+    );
   } catch (err) {
     console.error((err as Error).message);
     process.exit(1);

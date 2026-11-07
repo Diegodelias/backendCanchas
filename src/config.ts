@@ -26,6 +26,9 @@ const schema = z
     LIVE_MAX_VIEWERS: z.coerce.number().int().positive().default(3),
     LIVE_FIRST_BYTE_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
     FFMPEG: z.preprocess(emptyToUndefined, z.string().default('ffmpeg')),
+
+    // Cookie de sesión con `Secure` (solo viaja por HTTPS). Vacía: sí en production, no en el resto.
+    SESSION_COOKIE_SECURE: z.preprocess(emptyToUndefined, z.enum(['true', 'false']).optional()),
   })
   .superRefine((cfg, ctx) => {
     // La cámara es todo o nada: sin ninguna variable no hay cámara; con algunas, es un error.
@@ -38,7 +41,14 @@ const schema = z
         message: `Configuración de cámara incompleta: faltan ${missing.join(', ')}.`,
       });
     }
-  });
+  })
+  .transform((cfg) => ({
+    ...cfg,
+    SESSION_COOKIE_SECURE:
+      cfg.SESSION_COOKIE_SECURE === undefined
+        ? cfg.NODE_ENV === 'production'
+        : cfg.SESSION_COOKIE_SECURE === 'true',
+  }));
 
 export type Config = z.infer<typeof schema>;
 
