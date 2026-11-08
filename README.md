@@ -134,13 +134,16 @@ Los clubes y sus canchas viven en la base. Un club se da de alta **por comando**
 
 | Método y ruta | Quién | Respuestas |
 |---|---|---|
-| `GET /api/clubs` | Cualquiera, sin sesión | `200 { clubs }`: los clubes con sus **canchas activas**. Un club sin canchas activas no aparece. Responde con `Cache-Control: no-store`: un cambio del admin se ve al instante. |
+| `GET /api/clubs?page=&limit=&city=&sport=` | Cualquiera, sin sesión | `200 { clubs, page, limit, total, totalPages }`: una página de clubes (por defecto la 1, con 6; máximo 24) con sus **canchas activas**. `city` y `sport` filtran; con `sport` aparecen los clubes con al menos una cancha activa de ese deporte, cada uno con todas las suyas. Un club sin canchas activas no aparece. Una página fuera de rango devuelve `clubs: []`; un parámetro inválido, `400 validation_error`. Responde con `Cache-Control: no-store`: un cambio del admin se ve al instante. |
+| `GET /api/clubs/:id` | Cualquiera, sin sesión | `200 { club }` con sus canchas activas; `404` si no existe o no tiene canchas activas |
 | `GET /api/club/courts` | Admin de club | `200 { club, courts }`: su club y **todas** sus canchas (activas o no) |
 | `POST /api/club/courts` `{ name, sport, price }` | Admin de club | `201 { court }` (queda activa); `400 validation_error`; `409 court_name_taken`; `409 courts_limit_reached` |
 | `PATCH /api/club/courts/:id` `{ name?, sport?, price?, active? }` | Admin de club | `200 { court }`; `400`; `404`; `409 court_name_taken` |
+| `DELETE /api/club/courts/:id` | Admin de club | `204`; `404` (no existe, es de otro club o ya estaba borrada) |
 
-- **Cancha:** `{ id, name, sport, price, active }`. El nombre es obligatorio, de hasta 60 caracteres y **único dentro del club** sin distinguir mayúsculas. El deporte es `Fútbol 5`, `Fútbol 7`, `Fútbol 8` o `Fútbol 11`. El precio es un entero de pesos mayor que cero. Un club tiene hasta **50 canchas**, activas o no.
-- **No se borran:** se desactivan (`active: false`) y se pueden reactivar. No hay `DELETE`.
+- **Cancha:** `{ id, name, sport, price, active }`. El nombre es obligatorio, de hasta 60 caracteres y **único dentro del club** sin distinguir mayúsculas. El deporte es `Fútbol 5`, `Fútbol 7`, `Fútbol 8` o `Fútbol 11`. El precio es un entero de pesos mayor que cero. Un club tiene hasta **50 canchas**, activas o no (sin contar las borradas).
+- **Desactivar y borrar son distintos:** desactivar (`active: false`) saca la cancha del sitio y se puede reactivar. Borrar es **lógico**: se marca `deleted_at`, la cancha desaparece de la lista del admin y del sitio y no se puede editar ni reactivar, pero la fila se conserva (para no perder el historial cuando existan las reservas). El nombre de una borrada se puede reutilizar y no cuenta para el tope de 50.
+- **Imagen:** `clubs.image_url` y `courts.image_url` son opcionales y se devuelven como `imageUrl` (`null` si no hay). Ninguna ruta las escribe: se cargan directamente en la base.
 - **Cada admin solo accede a su club:** la cancha de otro club responde `404`; un jugador recibe `403` y sin sesión `401`.
 - **Los datos del club** (nombre, zona, ciudad, dirección) los fija el comando `crear-club` o la base: ningún endpoint los edita.
 - **Datos iniciales:** la migración carga 6 clubes y 12 canchas de ejemplo (`estacion-norte`, `la-cantera-crespo`, `polideportivo-belgrano`, `parque-sur-caballito`, `arena-nunez` y `terraza-colegiales`), con los ids que usan los partidos, las cámaras y los carteles QR de ejemplo. Son datos normales: se editan y se desactivan como cualquier otro. En un despliegue real también quedan cargados; para sacarlos del sitio, desactivá sus canchas.

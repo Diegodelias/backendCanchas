@@ -30,6 +30,7 @@ describe('migraciones', () => {
       '1762600000000_acceso-jugador',
       '1762700000000_recuperar-contrasena',
       '1762800000000_clubes-y-canchas',
+      '1762900000000_canchas-borrado-e-imagen',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -132,6 +133,30 @@ describe('migraciones', () => {
     await expect(court('test-unico-a', 'CANCHA uno')).rejects.toThrow(/courts_club_name_key/);
     await court('test-unico-b', 'Cancha Uno');
     await db.query(`DELETE FROM clubs WHERE id LIKE 'test-unico-%'`);
+  });
+
+  it('las canchas se borran de forma lógica, llevan una imagen opcional y el nombre solo es único entre las no borradas', async () => {
+    await db.query(`INSERT INTO clubs (id, name, zone, city, address) VALUES ('test-borrado', 'B', 'Z', 'buenos-aires', 'D')`);
+    const court = (name: string) =>
+      db.query(`INSERT INTO courts (id, club_id, name, sport, price) VALUES (gen_random_uuid()::text, 'test-borrado', $1, 'Fútbol 5', 1000)`, [name]);
+    await court('Cancha Uno');
+    await expect(court('cancha UNO')).rejects.toThrow(/courts_club_name_key/);
+
+    await db.query(`UPDATE courts SET deleted_at = now() WHERE club_id = 'test-borrado'`);
+    await court('Cancha Uno'); // el nombre de una borrada se puede reutilizar
+
+    const [fresh] = await db.query<{ deleted_at: Date | null; image_url: string | null }>(
+      `SELECT deleted_at, image_url FROM courts WHERE club_id = 'test-borrado' AND deleted_at IS NULL`,
+    );
+    expect(fresh).toEqual({ deleted_at: null, image_url: null });
+
+    await expect(db.query(`UPDATE clubs SET image_url = '' WHERE id = 'test-borrado'`)).rejects.toThrow(/image_url_check/);
+    await expect(
+      db.query(`UPDATE courts SET image_url = $1 WHERE club_id = 'test-borrado'`, ['x'.repeat(501)]),
+    ).rejects.toThrow(/image_url_check/);
+    await db.query(`UPDATE clubs SET image_url = '/assets/x.jpg' WHERE id = 'test-borrado'`);
+
+    await db.query(`DELETE FROM clubs WHERE id = 'test-borrado'`);
   });
 
   it('un admin no puede quedar asociado a un club que no existe', async () => {

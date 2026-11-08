@@ -55,7 +55,7 @@ describe('crear club', () => {
     expect(created.statusCode).toBe(201);
 
     // Y el club, ya con una cancha activa, aparece en el listado público.
-    const list = (await env.app.inject({ method: 'GET', url: '/api/clubs' })).json().clubs as { id: string }[];
+    const list = (await env.app.inject({ method: 'GET', url: '/api/clubs?limit=24' })).json().clubs as { id: string }[];
     expect(list.map((c) => c.id)).toContain(CLUB.id);
   });
 
