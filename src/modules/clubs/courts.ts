@@ -60,11 +60,14 @@ const NAME_TAKEN = () =>
 
 /** Las canchas del club (activas o no, sin las borradas), por orden de alta. */
 export async function listCourts(db: Database, clubId: string) {
-  const rows = await db.query<CourtRow>(
-    `SELECT ${COURT_COLUMNS} FROM courts WHERE club_id = $1 AND deleted_at IS NULL ORDER BY created_at, id`,
+  const rows = await db.query<CourtRow & { has_schedule: boolean }>(
+    `SELECT ${COURT_COLUMNS},
+            EXISTS (SELECT 1 FROM court_schedules s WHERE s.court_id = courts.id) AS has_schedule
+       FROM courts WHERE club_id = $1 AND deleted_at IS NULL ORDER BY created_at, id`,
     [clubId],
   );
-  return rows.map(toCourt);
+  // `hasSchedule` marca las canchas sin horarios cargados (no tienen turnos); solo lo trae el listado del panel.
+  return rows.map((row) => ({ ...toCourt(row), hasSchedule: row.has_schedule }));
 }
 
 /** Crea una cancha activa. 409 si el nombre se repite en el club o se llegó al tope. */

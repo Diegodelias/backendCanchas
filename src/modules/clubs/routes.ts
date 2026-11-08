@@ -3,6 +3,8 @@ import { z } from 'zod';
 import type { AppDeps } from '../../app.js';
 import { forbidden, notFound, unauthorized } from '../../lib/errors.js';
 import { resolveSession, SESSION_COOKIE } from '../auth/sessions.js';
+import { listClubBookings } from '../bookings/bookings.js';
+import { getSchedule, replaceSchedule, requireCourt, scheduleBody } from '../bookings/schedules.js';
 import { CITY_IDS } from './clubs.js';
 import {
   createCourt,
@@ -15,6 +17,7 @@ import {
 } from './courts.js';
 
 const idParam = z.object({ id: z.string().min(1).max(100) });
+const courtIdParam = z.object({ courtId: z.string().min(1).max(100) });
 
 /** Clubes por página del listado público cuando no se pide otra cantidad, y el máximo que se acepta. */
 export const DEFAULT_CLUBS_PER_PAGE = 6;
@@ -170,6 +173,31 @@ export async function clubsRoutes(app: FastifyInstance, deps: AppDeps) {
     const { id } = idParam.parse(req.params);
     const body = patchCourtBody.parse(req.body);
     return { court: await updateCourt(db, clubId, id, body) };
+  });
+
+  // GET /api/club/bookings -> { bookings } de las canchas del club, solo lectura.
+  app.get('/club/bookings', async (req, reply) => {
+    const clubId = await requireClubAdmin(req);
+    reply.header('Cache-Control', 'no-store');
+    return { bookings: await listClubBookings(db, clubId) };
+  });
+
+  // GET /api/club/courts/:courtId/schedule -> { days } del horario semanal; 404 si la cancha no es del club o está borrada.
+  app.get('/club/courts/:courtId/schedule', async (req, reply) => {
+    const clubId = await requireClubAdmin(req);
+    const { courtId } = courtIdParam.parse(req.params);
+    await requireCourt(db, clubId, courtId);
+    reply.header('Cache-Control', 'no-store');
+    return { days: await getSchedule(db, courtId) };
+  });
+
+  // PUT /api/club/courts/:courtId/schedule -> reemplaza todo el horario ({ days: [{ weekday, startHour, endHour }] }).
+  app.put('/club/courts/:courtId/schedule', async (req) => {
+    const clubId = await requireClubAdmin(req);
+    const { courtId } = courtIdParam.parse(req.params);
+    const body = scheduleBody.parse(req.body);
+    await requireCourt(db, clubId, courtId);
+    return { days: await replaceSchedule(db, courtId, body.days) };
   });
 
   // DELETE /api/club/courts/:id -> 204. Borrado lógico: la fila se conserva con `deleted_at`.

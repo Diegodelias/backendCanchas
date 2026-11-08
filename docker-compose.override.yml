@@ -1,0 +1,7 @@
+# Override LOCAL (docker compose lo carga solo, junto con docker-compose.yml).
+# Hace que la API mande los mails por el SMTP del backend/.env en vez de por Mailpit.
+# Para volver a Mailpit: borrá este archivo y corré `docker compose up -d api`.
+services:
+  api:
+    environment:
+      SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}

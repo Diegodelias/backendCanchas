@@ -163,6 +163,28 @@ Los clubes y sus canchas viven en la base. Un club se da de alta **por comando**
 - **Club activo o desactivado:** un club desactivado no aparece en `GET /api/clubs` ni en `GET /api/clubs/:id`, pero conserva sus canchas y sus admins, y estos siguen entrando a su panel (`GET /api/club/courts` trae `club.active`). Los clubes **no se borran**.
 - **Datos iniciales:** la migración carga 6 clubes y 12 canchas de ejemplo (`estacion-norte`, `la-cantera-crespo`, `polideportivo-belgrano`, `parque-sur-caballito`, `arena-nunez` y `terraza-colegiales`), con los ids que usan los partidos, las cámaras y los carteles QR de ejemplo. Son datos normales: se editan y se desactivan como cualquier otro. En un despliegue real también quedan cargados; para sacarlos del sitio, desactivá sus canchas.
 
+## Horarios y reservas
+
+Cada cancha tiene un **horario semanal** y se puede **reservar** un turno de 60 minutos, sin pago. Todo se interpreta en hora de Argentina (UTC-3, sin horario de verano).
+
+| Método y ruta | Quién | Respuestas |
+|---|---|---|
+| `GET /api/courts/:courtId/slots?date=AAAA-MM-DD` | Cualquiera, sin sesión | `200 { court, date, slots: [{ startsAt, time }] }` con los turnos libres de ese día (vacío si la cancha no tiene horarios o ese día está cerrada); `400 validation_error` si la fecha no es válida o está fuera de la ventana; `404` si la cancha está desactivada, borrada o es de un club desactivado |
+| `POST /api/courts/:courtId/bookings` `{ startsAt, name, email, phone? }` | Cualquiera; con sesión de jugador alcanza `{ startsAt }` | `201 { booking, emailSent }`; `400 validation_error`; `404` (cancha no reservable o sin horarios); `409 slot_taken`; `429 too_many_bookings` |
+| `GET /api/club/courts/:courtId/schedule` | Admin de club | `200 { days: [{ weekday, startHour, endHour }] }`; `404` si la cancha es de otro club o está borrada |
+| `PUT /api/club/courts/:courtId/schedule` `{ days }` | Admin de club | `200 { days }`: reemplaza **todo** el horario; `400 validation_error` indica el día; `404` |
+| `GET /api/club/bookings` | Admin de club | `200 { bookings }` de las canchas de su club, de la fecha de turno más lejana a la más cercana |
+| `GET` y `PUT /api/platform/clubs/:clubId/courts/:courtId/schedule` | Superadmin | Igual que las del admin, sobre cualquier club |
+| `GET /api/platform/clubs/:clubId/bookings` | Superadmin | `200 { club, bookings }` |
+
+- **Horario:** `weekday` va de 1 (lunes) a 7 (domingo); `startHour` de 0 a 23 y `endHour` de 1 a 24, horas enteras, con el cierre posterior a la apertura. Un día que no está en `days` es un día cerrado; una cancha sin días no tiene turnos y no se puede reservar. Cambiar el horario **no toca las reservas ya hechas**. Los listados de canchas del panel traen `hasSchedule`.
+- **Turnos libres:** se calculan al consultar (horario del día menos reservas); no hay una fila por turno. Se ofrecen los que empiezan al menos 1 hora después de ahora y hasta hoy + 14 días.
+- **Doble reserva:** la impide el índice único `bookings (court_id, starts_at)` de la base; quien pierde recibe `409 slot_taken`. Eso vale mientras todos los turnos sean de 60 minutos en hora en punto: si algún día cambia la duración, hay que cambiar el índice.
+- **Quién reserva:** un invitado manda nombre y mail (teléfono opcional); un jugador con sesión usa los de su cuenta y la reserva queda asociada a ella. La reserva guarda el precio de la cancha al reservar.
+- **Mail de confirmación:** sale después de guardar la reserva (puede tardar hasta los tiempos máximos del SMTP). Si falla, la reserva queda y la respuesta trae `emailSent: false`; el log registra solo el id de la reserva y el tipo de error.
+- **Límite por IP:** 10 reservas cada 15 minutos por IP (`MAX_BOOKINGS_PER_IP` en `src/modules/bookings/bookings.ts`); se cuentan en la tabla `bookings`, no en `login_attempts`.
+- **Fuera de alcance por ahora:** cancelar o mover reservas, bloqueos, pago online. Las canchas de ejemplo no traen horarios: se cargan desde el panel.
+
 ### Dar de alta un club
 
 ```bash

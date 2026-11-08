@@ -32,13 +32,16 @@ describe('migraciones', () => {
       '1762800000000_clubes-y-canchas',
       '1762900000000_canchas-borrado-e-imagen',
       '1763000000000_panel-superadmin',
+      '1763100000000_horarios-y-reservas',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name`,
     );
     expect(tables.map((t) => t.table_name)).toEqual([
+      'bookings',
       'clubs',
+      'court_schedules',
       'courts',
       'link_requests',
       'login_attempts',
@@ -148,6 +151,37 @@ describe('migraciones', () => {
       name: 'Cancha 1 · Fútbol 5', sport: 'Fútbol 5', price: 28000, club_id: 'estacion-norte',
     });
     expect(courts.find((c) => c.id === 'an-f11')).toMatchObject({ sport: 'Fútbol 11', price: 68000 });
+  });
+
+  it('los horarios y las reservas rechazan datos inválidos y una segunda reserva del mismo turno', async () => {
+    await db.query(`INSERT INTO clubs (id, name, zone, city, address) VALUES ('test-reservas', 'R', 'Z', 'buenos-aires', 'D')`);
+    await db.query(`INSERT INTO courts (id, club_id, name, sport, price) VALUES ('test-reservas-c1', 'test-reservas', 'Cancha', 'Fútbol 5', 1000)`);
+
+    const schedule = (weekday: number, start: number, end: number) =>
+      db.query(`INSERT INTO court_schedules (court_id, weekday, start_hour, end_hour) VALUES ('test-reservas-c1', $1, $2, $3)`, [weekday, start, end]);
+    await schedule(1, 16, 23);
+    await schedule(2, 0, 24); // abierta las 24 horas
+    await expect(schedule(1, 10, 12)).rejects.toThrow(/court_schedules_pkey/); // un solo rango por día
+    await expect(schedule(8, 10, 12)).rejects.toThrow(/weekday_check/);
+    await expect(schedule(3, 12, 12)).rejects.toThrow(/court_schedules_range_check/);
+    await expect(schedule(3, 14, 12)).rejects.toThrow(/court_schedules_range_check/);
+    await expect(schedule(3, 24, 25)).rejects.toThrow(/start_hour_check|end_hour_check/);
+
+    const booking = (startsAt: string, name = 'Ana', email = 'ana@mail.example') =>
+      db.query(
+        `INSERT INTO bookings (id, court_id, starts_at, price, name, email, created_ip)
+         VALUES (gen_random_uuid()::text, 'test-reservas-c1', $1, 1000, $2, $3, '1.1.1.1')`,
+        [startsAt, name, email],
+      );
+    await booking('2030-01-07T20:00:00-03:00');
+    await expect(booking('2030-01-07T20:00:00-03:00', 'Beto', 'beto@mail.example')).rejects.toThrow(/bookings_court_slot_key/);
+    await expect(booking('2030-01-07T20:30:00-03:00')).rejects.toThrow(/bookings_starts_on_the_hour_check/);
+    await expect(booking('2030-01-07T21:00:00-03:00', '')).rejects.toThrow(/bookings_name_check/);
+    await booking('2030-01-07T21:00:00-03:00'); // otro turno de la misma cancha sí
+
+    await db.query(`DELETE FROM clubs WHERE id = 'test-reservas'`); // arrastra canchas, horarios y reservas
+    const [left] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM bookings WHERE court_id = 'test-reservas-c1'`);
+    expect(left!.n).toBe('0');
   });
 
   it('los checks de clubes y canchas rechazan datos inválidos', async () => {

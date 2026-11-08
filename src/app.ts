@@ -4,6 +4,7 @@ import { z, ZodError } from 'zod';
 import type { Config } from './config.js';
 import type { Database } from './db/client.js';
 import { AppError } from './lib/errors.js';
+import { bookingsRoutes } from './modules/bookings/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { clubsRoutes } from './modules/clubs/routes.js';
 import { platformRoutes } from './modules/platform/routes.js';
@@ -108,6 +109,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await api.register(authRoutes, deps);
       await api.register(playsRoutes, deps);
       await api.register(clubsRoutes, deps);
+      await api.register(bookingsRoutes, deps);
       await api.register(platformRoutes, deps);
     },
     { prefix: '/api' },

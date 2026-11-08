@@ -10,6 +10,8 @@ import {
   patchCourtBody,
   updateCourt,
 } from '../clubs/courts.js';
+import { listClubBookings } from '../bookings/bookings.js';
+import { getSchedule, replaceSchedule, requireCourt, scheduleBody } from '../bookings/schedules.js';
 import { requireSuperadmin } from './guard.js';
 
 const clubParam = z.object({ clubId: z.string().min(1).max(100) });
@@ -58,6 +60,35 @@ export async function platformCourtsRoutes(app: FastifyInstance, deps: AppDeps) 
     const body = patchCourtBody.parse(req.body);
     await requireClub(clubId);
     return { court: await updateCourt(db, clubId, courtId, body) };
+  });
+
+  // GET /api/platform/clubs/:clubId/bookings -> { club, bookings } de las canchas de ese club, solo lectura.
+  app.get('/platform/clubs/:clubId/bookings', async (req, reply) => {
+    await requireSuperadmin(db, req, now());
+    const { clubId } = clubParam.parse(req.params);
+    const club = await requireClub(clubId);
+    reply.header('Cache-Control', 'no-store');
+    return { club, bookings: await listClubBookings(db, clubId) };
+  });
+
+  // GET /api/platform/clubs/:clubId/courts/:courtId/schedule -> { days }; 404 si la cancha no es de ese club o está borrada.
+  app.get('/platform/clubs/:clubId/courts/:courtId/schedule', async (req, reply) => {
+    await requireSuperadmin(db, req, now());
+    const { clubId, courtId } = courtParams.parse(req.params);
+    await requireClub(clubId);
+    await requireCourt(db, clubId, courtId);
+    reply.header('Cache-Control', 'no-store');
+    return { days: await getSchedule(db, courtId) };
+  });
+
+  // PUT /api/platform/clubs/:clubId/courts/:courtId/schedule -> reemplaza todo el horario (mismas reglas que el admin).
+  app.put('/platform/clubs/:clubId/courts/:courtId/schedule', async (req) => {
+    await requireSuperadmin(db, req, now());
+    const { clubId, courtId } = courtParams.parse(req.params);
+    const body = scheduleBody.parse(req.body);
+    await requireClub(clubId);
+    await requireCourt(db, clubId, courtId);
+    return { days: await replaceSchedule(db, courtId, body.days) };
   });
 
   // DELETE /api/platform/clubs/:clubId/courts/:courtId -> 204 (borrado lógico); 404 si no es de ese club.
