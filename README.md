@@ -281,6 +281,8 @@ npm run cargar-grabaciones-demo
 docker compose exec api node dist/cli/cargar-grabaciones-demo.js
 ```
 
+> **El video de demostración no está en el repositorio** (`videos/` pesa 5,5 MB y no se versiona). Quien clone el backend tiene que copiar a mano un mp4 como `backend/videos/demo-partido.mp4` (de ~10 segundos, H.264 + AAC) antes de cargar las grabaciones de demostración o probar las descargas de fragmentos.
+
 Si falta `videos/demo-partido.mp4` no carga nada y lo avisa; una cancha de ejemplo que no existe se omite con un aviso, y nunca pisa una grabación real que ocupe el mismo turno.
 
 ### Pendiente: almacenamiento de grabaciones reales
