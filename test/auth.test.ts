@@ -1,7 +1,7 @@
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createAdmin } from '../src/modules/auth/admins.js';
-import { SESSION_COOKIE } from '../src/modules/auth/sessions.js';
+import { createAdmin, createSuperadmin } from '../src/modules/auth/admins.js';
+import { createSession, SESSION_COOKIE } from '../src/modules/auth/sessions.js';
 import { createDbTestEnv, type DbTestEnv } from './helpers.js';
 
 const ADMIN = {
@@ -78,6 +78,62 @@ describe('auth de admin', () => {
     expect(wrongPass.json()).toEqual(noUser.json());
     expect(wrongPass.json().error.code).toBe('invalid_credentials');
     expect(sessionToken(wrongPass)).toBeUndefined();
+  });
+
+  describe('superadmin, cuenta dada de baja y admin invitado', () => {
+    const SUPER = { email: 'root@canchas3.example', name: 'Root', password: 'clave-de-super-123' };
+
+    it('un superadmin ingresa por el mismo login y recibe rol de superadmin sin club', async () => {
+      await createSuperadmin(env.db, SUPER);
+      const res = await login(SUPER.email, SUPER.password);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().user).toMatchObject({ email: SUPER.email, name: SUPER.name, role: 'superadmin', clubId: null });
+      expect(sessionToken(res)).toBeDefined();
+      expect((await me(sessionToken(res))).json().user).toMatchObject({ role: 'superadmin' });
+    });
+
+    it('con contraseña incorrecta, un superadmin recibe el mismo error que cualquier admin', async () => {
+      await createSuperadmin(env.db, SUPER);
+      const wrongSuper = await login(SUPER.email, 'otra-clave-cualquiera');
+      const wrongAdmin = await login(ADMIN.email, 'otra-clave-cualquiera');
+      expect(wrongSuper.statusCode).toBe(401);
+      expect(wrongSuper.json()).toEqual(wrongAdmin.json());
+    });
+
+    it('el límite de 5 intentos fallidos también vale para la cuenta de un superadmin', async () => {
+      await createSuperadmin(env.db, SUPER);
+      for (let i = 0; i < 5; i++) {
+        expect((await login(SUPER.email, 'mala-clave-000', `198.51.100.${i}`)).statusCode).toBe(401);
+      }
+      const res = await login(SUPER.email, SUPER.password, '198.51.100.99');
+      expect(res.statusCode).toBe(429);
+      expect(res.json().error.code).toBe('too_many_attempts');
+    });
+
+    it('un admin dado de baja no ingresa, ni con su contraseña correcta, y recibe el mismo error genérico', async () => {
+      await env.db.query(`UPDATE users SET deactivated_at = now() WHERE lower(email) = lower($1)`, [ADMIN.email]);
+      const baja = await login(ADMIN.email, ADMIN.password);
+      const wrong = await login('nadie@club.example', ADMIN.password);
+      expect(baja.statusCode).toBe(401);
+      expect(baja.json()).toEqual(wrong.json());
+      expect(sessionToken(baja)).toBeUndefined();
+      // Cuenta como intento fallido, igual que cualquier credencial inválida.
+      expect(await env.db.query(`SELECT 1 FROM login_attempts WHERE lower(email) = lower($1)`, [ADMIN.email])).toHaveLength(1);
+    });
+
+    it('un admin invitado que todavía no eligió contraseña no ingresa y no se distingue de un mail inexistente', async () => {
+      await env.db.query(
+        `INSERT INTO users (email, name, role, club_id) VALUES ('invitado@club.example', 'Inv', 'club_admin', 'estacion-norte')`,
+      );
+      const attempts = ['x', 'cualquier-clave-1', ADMIN.password];
+      for (const [i, attempt] of attempts.entries()) {
+        const res = await login('invitado@club.example', attempt, `198.51.100.${i * 2}`);
+        const missing = await login('inexistente@club.example', attempt, `198.51.100.${i * 2 + 1}`);
+        expect(res.statusCode).toBe(401);
+        expect(res.json()).toEqual(missing.json());
+        expect(sessionToken(res)).toBeUndefined();
+      }
+    });
   });
 
   it('cuerpo inválido responde 400', async () => {
@@ -157,6 +213,28 @@ describe('auth de admin', () => {
   it('logout sin sesión responde 204', async () => {
     const res = await env.app.inject({ method: 'POST', url: '/api/auth/logout' });
     expect(res.statusCode).toBe(204);
+  });
+
+  it('la sesión de un superadmin también vence a las 8 horas sin uso y se renueva con el uso', async () => {
+    const sa = await createSuperadmin(env.db, { email: 'root@canchas3.example', name: 'Root', password: 'otra-clave-123' });
+    const token = await createSession(env.db, sa.id, 'superadmin', env.clock.now());
+    const user = (await me(token)).json().user;
+    expect(user).toMatchObject({ role: 'superadmin', clubId: null });
+
+    for (let i = 0; i < 2; i++) {
+      env.clock.advance(6 * HOUR);
+      expect((await me(token)).json().user).not.toBeNull();
+    }
+    env.clock.advance(8 * HOUR + 1000);
+    expect((await me(token)).json()).toEqual({ user: null });
+  });
+
+  it('una sesión abierta de un admin dado de baja deja de resolver aunque no se haya borrado', async () => {
+    const token = sessionToken(await login(ADMIN.email, ADMIN.password))!;
+    expect((await me(token)).json().user).not.toBeNull();
+    await env.db.query(`UPDATE users SET deactivated_at = now() WHERE lower(email) = lower($1)`, [ADMIN.email]);
+    expect((await me(token)).json()).toEqual({ user: null });
+    expect(await env.db.query('SELECT 1 FROM sessions')).toHaveLength(1);
   });
 
   it('la base no guarda la contraseña ni el token en texto plano', async () => {

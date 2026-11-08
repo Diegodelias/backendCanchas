@@ -47,7 +47,19 @@ export class SmtpMailer implements Mailer {
   }
 }
 
+/**
+ * Tiempos máximos del transporte SMTP. Sin ellos `nodemailer` espera hasta 2 minutos por un servidor caído, y la
+ * invitación de un admin (que espera el resultado del envío) dejaría la pantalla del superadmin colgada.
+ */
+export const SMTP_TIMEOUTS = {
+  connectionTimeout: 10_000,
+  greetingTimeout: 10_000,
+  socketTimeout: 20_000,
+} as const;
+
 /** SMTP si hay `SMTP_URL`; si no, la consola. */
 export function createMailer(config: Config, log: MailLogger): Mailer {
-  return config.SMTP_URL ? new SmtpMailer(nodemailer.createTransport(config.SMTP_URL), config.MAIL_FROM) : new ConsoleMailer(log);
+  return config.SMTP_URL
+    ? new SmtpMailer(nodemailer.createTransport({ url: config.SMTP_URL, ...SMTP_TIMEOUTS }), config.MAIL_FROM)
+    : new ConsoleMailer(log);
 }

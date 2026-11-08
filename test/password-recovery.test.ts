@@ -1,6 +1,6 @@
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createAdmin } from '../src/modules/auth/admins.js';
+import { createAdmin, createSuperadmin } from '../src/modules/auth/admins.js';
 import { SESSION_COOKIE } from '../src/modules/auth/sessions.js';
 import { PASSWORD_RESET_EMAIL_SUBJECT, passwordResetEmail } from '../src/modules/mail/passwordResetEmail.js';
 import { createDbTestEnv, sleep, waitFor, type DbTestEnv } from './helpers.js';
@@ -60,6 +60,67 @@ describe('recuperación de contraseña del admin', () => {
     await waitFor(() => env.mailer.sent.length > before);
     return tokenFrom(env.mailer.lastLinkTo(email)!);
   }
+
+  describe('superadmin, admins dados de baja y admins invitados', () => {
+    const SUPER = { email: 'root@canchas3.example', name: 'Root', password: 'clave-de-super-123' };
+
+    it('un superadmin recibe el link, elige una contraseña nueva y se cierran sus sesiones', async () => {
+      await createSuperadmin(env.db, SUPER);
+      const session = sessionCookie(await loginAdmin(SUPER.password, SUPER.email))!;
+      expect((await me(session)).json().user).toMatchObject({ role: 'superadmin' });
+
+      const token = await issueResetToken(SUPER.email);
+      expect((await reset(token, NEW_PASSWORD)).statusCode).toBe(204);
+
+      expect((await me(session)).json()).toEqual({ user: null });
+      expect((await loginAdmin(SUPER.password, SUPER.email)).statusCode).toBe(401);
+      const ok = await loginAdmin(NEW_PASSWORD, SUPER.email);
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().user).toMatchObject({ role: 'superadmin', clubId: null });
+    });
+
+    it('para un admin dado de baja responde lo mismo, no envía ningún mail y no crea links', async () => {
+      await env.db.query(`UPDATE users SET deactivated_at = now() WHERE lower(email) = lower($1)`, [ADMIN.email]);
+      env.mailer.sent.length = 0;
+      const tokensBefore = await count('login_tokens');
+
+      const baja = await requestReset(ADMIN.email);
+      const nobody = await requestReset('nadie@mail.example');
+      expect(baja.statusCode).toBe(202);
+      expect(baja.json()).toEqual(nobody.json());
+      await sleep(150);
+
+      expect(env.mailer.sent).toHaveLength(0);
+      expect(await count('login_tokens')).toBe(tokensBefore);
+    });
+
+    it('un link de recuperación pedido antes de la baja no cambia la contraseña de la cuenta dada de baja', async () => {
+      const token = await issueResetToken();
+      await env.db.query(`UPDATE users SET deactivated_at = now() WHERE lower(email) = lower($1)`, [ADMIN.email]);
+
+      const res = await reset(token, NEW_PASSWORD);
+      expect(res.statusCode).toBe(410);
+      const [row] = await env.db.query<{ password_hash: string }>(`SELECT password_hash FROM users WHERE lower(email) = lower($1)`, [ADMIN.email]);
+      expect(row!.password_hash).not.toBeNull();
+      expect((await loginAdmin(ADMIN.password)).statusCode).toBe(401); // baja: no ingresa
+    });
+
+    it('un admin invitado sin contraseña recupera, elige una y la cuenta queda activa, sin abrir sesión', async () => {
+      await env.db.query(
+        `INSERT INTO users (email, name, role, club_id) VALUES ('invitado@club.example', 'Inv', 'club_admin', 'estacion-norte')`,
+      );
+      const token = await issueResetToken('invitado@club.example');
+      const res = await reset(token, NEW_PASSWORD);
+      expect(res.statusCode).toBe(204);
+      expect(sessionCookie(res)).toBeUndefined();
+
+      const [row] = await env.db.query<{ password_hash: string | null }>(
+        `SELECT password_hash FROM users WHERE email = 'invitado@club.example'`,
+      );
+      expect(row!.password_hash).not.toBeNull();
+      expect((await loginAdmin(NEW_PASSWORD, 'invitado@club.example')).statusCode).toBe(200);
+    });
+  });
 
   describe('pedir la recuperación', () => {
     it('responde lo mismo para un admin, un jugador y un mail sin cuenta', async () => {

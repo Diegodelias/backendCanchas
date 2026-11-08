@@ -15,6 +15,7 @@
     "migrate": "node-pg-migrate up --envPath .env --migrations-dir migrations",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql",
     "crear-admin": "tsx --env-file=.env src/cli/crear-admin.ts",
+    "crear-superadmin": "tsx --env-file=.env src/cli/crear-superadmin.ts",
     "crear-club": "tsx --env-file=.env src/cli/crear-club.ts"
   },
   "dependencies": {

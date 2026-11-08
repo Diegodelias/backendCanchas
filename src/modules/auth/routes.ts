@@ -42,9 +42,21 @@ const resetPasswordBody = z.object({
     .max(1024, 'La contraseña es demasiado larga.'),
 });
 
+const acceptInviteBody = z.object({
+  token: z.string().min(1, 'Falta el link de invitación.').max(200),
+  password: z
+    .string()
+    .min(MIN_PASSWORD_LENGTH, `La contraseña debe tener ${MIN_PASSWORD_LENGTH} caracteres o más.`)
+    .max(1024, 'La contraseña es demasiado larga.'),
+});
+
+const invitationQuery = z.object({
+  token: z.string().min(1, 'Falta el link de invitación.').max(200),
+});
+
 /** Mismo texto para admin, jugador y mail sin cuenta: no revela qué cuentas existen. */
 const RESET_REQUESTED_MESSAGE =
-  'Si el mail es de un administrador de club, te enviamos un link para elegir una contraseña nueva. Revisá tu bandeja de entrada y el correo no deseado. El link vence en 15 minutos.';
+  'Si el mail es de un administrador, te enviamos un link para elegir una contraseña nueva. Revisá tu bandeja de entrada y el correo no deseado. El link vence en 15 minutos.';
 
 const TOO_MANY_LINK_REQUESTS = () =>
   new AppError(429, 'too_many_requests', 'Pediste demasiados links. Esperá 15 minutos y probá de nuevo.');
@@ -53,6 +65,12 @@ const LINK_USED = () => new AppError(410, 'link_used', 'Este link ya se usó. Pe
 
 const LINK_EXPIRED = () =>
   new AppError(410, 'link_expired', 'Este link venció o no es válido. Pedí uno nuevo con tu mail.');
+
+const INVITE_USED = () =>
+  new AppError(410, 'link_used', 'Esta invitación ya se usó. Si no podés entrar, pedí que te la reenvíen.');
+
+const INVITE_EXPIRED = () =>
+  new AppError(410, 'link_expired', 'Esta invitación venció o no es válida. Pedí que te la reenvíen.');
 
 const INVALID_CREDENTIALS = () =>
   new AppError(401, 'invalid_credentials', 'El mail o la contraseña no son correctos.');
@@ -86,16 +104,19 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     // El límite se mira antes de verificar: bloqueado, ni siquiera la clave correcta entra.
     if (await isLoginBlocked(db, email, req.ip, at)) throw TOO_MANY_ATTEMPTS();
 
-    const [user] = await db.query<UserRow>(
-      `SELECT id, email, name, role, club_id, password_hash
-         FROM users WHERE lower(email) = lower($1) AND role = 'club_admin'`,
+    const [user] = await db.query<UserRow & { deactivated_at: Date | null }>(
+      `SELECT id, email, name, role, club_id, password_hash, deactivated_at
+         FROM users WHERE lower(email) = lower($1) AND role IN ('club_admin', 'superadmin')`,
       [email],
     );
-    const ok = user?.password_hash
-      ? await verifyPassword(user.password_hash, password)
+    // Una cuenta dada de baja, un admin invitado que todavía no eligió contraseña y un mail inexistente
+    // pasan por la misma verificación falsa y dan el mismo error: no se distinguen desde afuera.
+    const usable = user && !user.deactivated_at && user.password_hash ? user : null;
+    const ok = usable
+      ? await verifyPassword(usable.password_hash!, password)
       : await verifyAgainstDummy(password);
 
-    if (!user || !ok) {
+    if (!user || !usable || !ok) {
       await recordFailedLogin(db, email, req.ip, at);
       throw INVALID_CREDENTIALS();
     }
@@ -171,7 +192,8 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     await recordLinkRequest(db, 'password_reset', email, req.ip, at);
 
     const [admin] = await db.query<{ id: string }>(
-      `SELECT id FROM users WHERE lower(email) = lower($1) AND role = 'club_admin'`,
+      `SELECT id FROM users
+        WHERE lower(email) = lower($1) AND role IN ('club_admin', 'superadmin') AND deactivated_at IS NULL`,
       [email],
     );
     if (admin) {
@@ -202,7 +224,8 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
           RETURNING email
        ), u AS (
          UPDATE users SET password_hash = $3
-          WHERE lower(email) = (SELECT lower(email) FROM t) AND role = 'club_admin'
+          WHERE lower(email) = (SELECT lower(email) FROM t)
+            AND role IN ('club_admin', 'superadmin') AND deactivated_at IS NULL
           RETURNING id
        ), s AS (
          DELETE FROM sessions WHERE user_id IN (SELECT id FROM u)
@@ -215,6 +238,67 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     // El link se consumió pero ya no hay un admin con ese mail: no cambió nada.
     if ((result?.consumed ?? 0) > 0) throw LINK_EXPIRED();
     throw (await whyUnusable(db, 'password_reset', hashToken(token))) === 'used' ? LINK_USED() : LINK_EXPIRED();
+  });
+
+  // GET /api/auth/admin/invitation?token=… -> 200 { clubName, adminName } sin consumir el link; 410 si no sirve.
+  // Sirve para que la página muestre «Elegí tu contraseña» con el nombre del club.
+  app.get('/auth/admin/invitation', async (req, reply) => {
+    const { token } = invitationQuery.parse(req.query);
+    const at = now();
+    const [row] = await db.query<{ admin_name: string | null; club_name: string }>(
+      `SELECT u.name AS admin_name, c.name AS club_name
+         FROM login_tokens t
+         JOIN users u ON lower(u.email) = lower(t.email)
+          AND u.role = 'club_admin' AND u.deactivated_at IS NULL AND u.password_hash IS NULL
+         JOIN clubs c ON c.id = u.club_id
+        WHERE t.token_hash = $1 AND t.purpose = 'admin_invite' AND t.used_at IS NULL AND t.expires_at > $2`,
+      [hashToken(token), at],
+    );
+    if (!row) throw (await whyUnusable(db, 'admin_invite', hashToken(token))) === 'used' ? INVITE_USED() : INVITE_EXPIRED();
+    reply.header('Cache-Control', 'no-store');
+    return { clubName: row.club_name, adminName: row.admin_name };
+  });
+
+  // POST /api/auth/admin/accept-invite { token, password } -> 200 { user } con la cookie de sesión.
+  // Fija la contraseña del admin invitado, lo pasa a Activo y abre su sesión. 410 si el link no sirve.
+  app.post('/auth/admin/accept-invite', async (req, reply) => {
+    // La contraseña se valida ANTES de tocar el link: una corta no lo gasta y se puede reintentar.
+    const { token, password } = acceptInviteBody.parse(req.body);
+    const at = now();
+    const passwordHash = await hashPassword(password);
+
+    // Consumir el link y fijar la contraseña van en una sola sentencia: o pasa todo o no pasa nada, y el link solo
+    // se gasta si la cuenta sigue Invitada (sin contraseña y sin baja). Dos pedidos con el mismo link no pasan los dos.
+    const [result] = await db.query<{ consumed: number; usr: UserRow | null }>(
+      `WITH t AS (
+         UPDATE login_tokens SET used_at = $2::timestamptz
+          WHERE token_hash = $1 AND purpose = 'admin_invite' AND used_at IS NULL AND expires_at > $2::timestamptz
+            AND EXISTS (
+              SELECT 1 FROM users x
+               WHERE lower(x.email) = lower(login_tokens.email)
+                 AND x.role = 'club_admin' AND x.deactivated_at IS NULL AND x.password_hash IS NULL)
+          RETURNING email
+       ), u AS (
+         UPDATE users SET password_hash = $3
+          WHERE lower(email) = (SELECT lower(email) FROM t)
+            AND role = 'club_admin' AND deactivated_at IS NULL AND password_hash IS NULL
+          RETURNING id, email, name, role, club_id, password_hash
+       )
+       SELECT (SELECT count(*)::int FROM t) AS consumed, (SELECT row_to_json(u) FROM u LIMIT 1) AS usr`,
+      [hashToken(token), at, passwordHash],
+    );
+
+    const user = result?.usr;
+    if (!user) {
+      if ((result?.consumed ?? 0) > 0) throw INVITE_EXPIRED();
+      throw (await whyUnusable(db, 'admin_invite', hashToken(token))) === 'used' ? INVITE_USED() : INVITE_EXPIRED();
+    }
+
+    // Un navegador con otra sesión (de jugador u otro admin) la cierra al ingresar.
+    await deleteSession(db, req.cookies[SESSION_COOKIE]);
+    const sessionToken = await createSession(db, user.id, user.role, at);
+    reply.setCookie(SESSION_COOKIE, sessionToken, cookieOptions);
+    return { user: toSessionUser(user) };
   });
 
   // POST /api/auth/logout -> 204; invalida la sesión en la base (funciona aunque no haya sesión).

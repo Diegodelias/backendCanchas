@@ -9,9 +9,12 @@ export const CITY_IDS = ['buenos-aires', 'rosario', 'cordoba'] as const;
 /** Mismo formato que el `check` de la tabla `clubs`. */
 const CLUB_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-/** Error de datos al crear un club: no se creó nada. */
+/** Error de datos al crear o editar un club: no se cambió nada. `taken` es un identificador que ya existe. */
 export class ClubInputError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    public readonly kind: 'invalid' | 'taken' = 'invalid',
+  ) {
     super(message);
     this.name = 'ClubInputError';
   }
@@ -26,21 +29,39 @@ export interface NewClub {
 }
 
 export interface Club extends NewClub {
+  active: boolean;
   createdAt: Date;
 }
 
-export async function createClub(db: Database, input: NewClub): Promise<Club> {
-  const id = input.id.trim();
-  const name = input.name.trim();
-  const zone = input.zone.trim();
-  const city = input.city.trim();
-  const address = input.address.trim();
+/** Datos de un club que se pueden editar. El identificador no está: no se cambia nunca. */
+export interface ClubFields {
+  name: string;
+  zone: string;
+  city: string;
+  address: string;
+}
 
+/** Valida y limpia el identificador de un club (formato y largo). */
+export function validateClubId(rawId: string): string {
+  const id = rawId.trim();
   if (id.length < 3 || id.length > 60 || !CLUB_ID_PATTERN.test(id)) {
     throw new ClubInputError(
       `El identificador «${id}» no es válido: usá entre 3 y 60 caracteres, solo minúsculas, números y guiones (ej. mi-club-norte).`,
     );
   }
+  return id;
+}
+
+/**
+ * Valida y limpia el nombre, la zona, la ciudad y la dirección de un club. Son las mismas reglas para el alta
+ * (comando y panel de la plataforma) y para la edición.
+ */
+export function validateClubFields(input: ClubFields): ClubFields {
+  const name = input.name.trim();
+  const zone = input.zone.trim();
+  const city = input.city.trim();
+  const address = input.address.trim();
+
   if (!name) throw new ClubInputError('Falta el nombre del club.');
   if (name.length > 80) throw new ClubInputError('El nombre del club puede tener hasta 80 caracteres.');
   if (!zone) throw new ClubInputError('Falta la zona del club.');
@@ -48,21 +69,80 @@ export async function createClub(db: Database, input: NewClub): Promise<Club> {
   if (!(CITY_IDS as readonly string[]).includes(city)) {
     throw new ClubInputError(`La ciudad «${city}» no existe en el sitio. Ciudades válidas: ${CITY_IDS.join(', ')}.`);
   }
+  return { name, zone, city, address };
+}
 
-  const taken = new ClubInputError(`Ya existe un club con el identificador ${id}.`);
+interface ClubRow {
+  id: string;
+  name: string;
+  zone: string;
+  city: string;
+  address: string;
+  active: boolean;
+  created_at: Date;
+}
+
+const toClub = (row: ClubRow): Club => ({
+  id: row.id,
+  name: row.name,
+  zone: row.zone,
+  city: row.city,
+  address: row.address,
+  active: row.active,
+  createdAt: row.created_at,
+});
+
+export async function createClub(db: Database, input: NewClub): Promise<Club> {
+  const id = validateClubId(input.id);
+  const { name, zone, city, address } = validateClubFields(input);
+
+  const taken = new ClubInputError(`Ya existe un club con el identificador ${id}.`, 'taken');
   const existing = await db.query(`SELECT 1 FROM clubs WHERE id = $1`, [id]);
   if (existing.length > 0) throw taken;
 
   try {
-    const [row] = await db.query<{ id: string; name: string; zone: string; city: string; address: string; created_at: Date }>(
+    const [row] = await db.query<ClubRow>(
       `INSERT INTO clubs (id, name, zone, city, address) VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, zone, city, address, created_at`,
+       RETURNING id, name, zone, city, address, active, created_at`,
       [id, name, zone, city, address],
     );
-    return { id: row!.id, name: row!.name, zone: row!.zone, city: row!.city, address: row!.address, createdAt: row!.created_at };
+    return toClub(row!);
   } catch (err) {
     // Otro alta con el mismo identificador pudo entrar entre la consulta y el insert.
     if ((err as { code?: string }).code === '23505') throw taken;
     throw err;
   }
+}
+
+/** Qué se puede cambiar de un club. El identificador nunca. */
+export interface ClubPatch extends Partial<ClubFields> {
+  active?: boolean;
+}
+
+/**
+ * Edita un club: nombre, zona, ciudad, dirección y estado. Cada dato cambiado se valida con las mismas
+ * reglas que el alta. Devuelve null si el club no existe.
+ */
+export async function updateClub(db: Database, id: string, patch: ClubPatch): Promise<Club | null> {
+  const [current] = await db.query<ClubRow>(
+    `SELECT id, name, zone, city, address, active, created_at FROM clubs WHERE id = $1`,
+    [id],
+  );
+  if (!current) return null;
+
+  // Solo se revalidan los datos si el pedido cambia alguno: activar o desactivar no toca nada más.
+  const editsFields = patch.name !== undefined || patch.zone !== undefined || patch.city !== undefined || patch.address !== undefined;
+  const merged: ClubFields = {
+    name: patch.name ?? current.name,
+    zone: patch.zone ?? current.zone,
+    city: patch.city ?? current.city,
+    address: patch.address ?? current.address,
+  };
+  const fields = editsFields ? validateClubFields(merged) : merged;
+  const [row] = await db.query<ClubRow>(
+    `UPDATE clubs SET name = $2, zone = $3, city = $4, address = $5, active = $6 WHERE id = $1
+     RETURNING id, name, zone, city, address, active, created_at`,
+    [id, fields.name, fields.zone, fields.city, fields.address, patch.active ?? current.active],
+  );
+  return row ? toClub(row) : null;
 }

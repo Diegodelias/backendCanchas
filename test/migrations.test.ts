@@ -31,6 +31,7 @@ describe('migraciones', () => {
       '1762700000000_recuperar-contrasena',
       '1762800000000_clubes-y-canchas',
       '1762900000000_canchas-borrado-e-imagen',
+      '1763000000000_panel-superadmin',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -49,18 +50,59 @@ describe('migraciones', () => {
     ]);
   });
 
-  it('el check impide un admin sin club o sin contraseña', async () => {
+  it('el check impide un admin de club sin club', async () => {
     await expect(
       db.query(`INSERT INTO users (email, name, role) VALUES ('a@club.example', 'A', 'club_admin')`),
-    ).rejects.toThrow(/users_club_admin_needs_club_and_password/);
+    ).rejects.toThrow(/users_role_shape_check/);
   });
 
-  it('un jugador se puede crear sin nombre, pero un admin sigue necesitando club y contraseña', async () => {
+  it('un jugador se puede crear sin nombre, pero un admin sigue necesitando club', async () => {
     await db.query(`INSERT INTO users (email, role) VALUES ('jugador@mail.example', 'player')`);
     await expect(
       db.query(`INSERT INTO users (email, name, role) VALUES ('b@club.example', 'B', 'club_admin')`),
-    ).rejects.toThrow(/users_club_admin_needs_club_and_password/);
+    ).rejects.toThrow(/users_role_shape_check/);
     await db.query(`DELETE FROM users`);
+  });
+
+  it('un admin de club invitado puede existir sin contraseña, y un superadmin no tiene club y sí contraseña', async () => {
+    // Invitado: club y sin contraseña.
+    await db.query(
+      `INSERT INTO users (email, name, role, club_id) VALUES ('invitado@club.example', 'Inv', 'club_admin', 'estacion-norte')`,
+    );
+    const [inv] = await db.query<{ password_hash: string | null; deactivated_at: Date | null }>(
+      `SELECT password_hash, deactivated_at FROM users WHERE email = 'invitado@club.example'`,
+    );
+    expect(inv).toEqual({ password_hash: null, deactivated_at: null });
+
+    // Superadmin válido: sin club, con contraseña.
+    await db.query(`INSERT INTO users (email, name, role, password_hash) VALUES ('super@mail.example', 'S', 'superadmin', 'hash')`);
+    // Superadmin inválido: con club, o sin contraseña.
+    await expect(
+      db.query(`INSERT INTO users (email, name, role, club_id, password_hash) VALUES ('s2@mail.example', 'S', 'superadmin', 'estacion-norte', 'hash')`),
+    ).rejects.toThrow(/users_role_shape_check/);
+    await expect(
+      db.query(`INSERT INTO users (email, name, role) VALUES ('s3@mail.example', 'S', 'superadmin')`),
+    ).rejects.toThrow(/users_role_shape_check/);
+    // Un rol desconocido sigue rechazado.
+    await expect(
+      db.query(`INSERT INTO users (email, name, role, password_hash) VALUES ('s4@mail.example', 'S', 'root', 'hash')`),
+    ).rejects.toThrow(/users_role_check/);
+
+    await db.query(`DELETE FROM users WHERE email IN ('invitado@club.example', 'super@mail.example')`);
+  });
+
+  it('los clubes arrancan activos y los links aceptan el propósito de invitación', async () => {
+    const clubs = await db.query<{ active: boolean }>('SELECT active FROM clubs');
+    expect(clubs.length).toBeGreaterThan(0);
+    expect(clubs.every((c) => c.active)).toBe(true);
+
+    await db.query(`INSERT INTO login_tokens (email, token_hash, expires_at, purpose) VALUES ('i@x.example', 'inv1', now(), 'admin_invite')`);
+    await db.query(`INSERT INTO link_requests (email, ip, purpose) VALUES ('i@x.example', '1.1.1.1', 'admin_invite')`);
+    await expect(
+      db.query(`INSERT INTO login_tokens (email, token_hash, expires_at, purpose) VALUES ('i@x.example', 'inv2', now(), 'otro')`),
+    ).rejects.toThrow(/login_tokens_purpose_check/);
+    await db.query(`DELETE FROM login_tokens WHERE email = 'i@x.example'`);
+    await db.query(`DELETE FROM link_requests WHERE email = 'i@x.example'`);
   });
 
   it('los links y los pedidos llevan un propósito, con acceso por defecto', async () => {

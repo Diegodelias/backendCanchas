@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AdminInputError, createAdmin } from '../src/modules/auth/admins.js';
-import { CITY_IDS, ClubInputError, createClub } from '../src/modules/clubs/clubs.js';
+import { CITY_IDS, ClubInputError, createClub, updateClub } from '../src/modules/clubs/clubs.js';
 import { SESSION_COOKIE } from '../src/modules/auth/sessions.js';
 import { createDbTestEnv, type DbTestEnv } from './helpers.js';
 
@@ -182,5 +182,69 @@ describe('crear club', () => {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('Uso: crear-club');
     });
+  });
+});
+
+describe('editar un club', () => {
+  let env: DbTestEnv;
+
+  beforeAll(async () => {
+    env = await createDbTestEnv();
+  });
+  afterAll(async () => {
+    await env?.close();
+  });
+  beforeEach(async () => {
+    await env.reset();
+    await createClub(env.db, CLUB);
+  });
+
+  const row = async () =>
+    (await env.db.query<{ id: string; name: string; zone: string; city: string; address: string; active: boolean }>(
+      `SELECT id, name, zone, city, address, active FROM clubs WHERE id = $1`,
+      [CLUB.id],
+    ))[0]!;
+
+  it('un club nuevo queda activo', async () => {
+    expect((await row()).active).toBe(true);
+  });
+
+  it('cambia nombre, zona, ciudad y dirección sin tocar el identificador', async () => {
+    const updated = await updateClub(env.db, CLUB.id, {
+      name: '  Club Renovado  ',
+      zone: 'Belgrano',
+      city: 'rosario',
+      address: 'Calle Nueva 100',
+    });
+    expect(updated).toMatchObject({ id: CLUB.id, name: 'Club Renovado', zone: 'Belgrano', city: 'rosario', address: 'Calle Nueva 100', active: true });
+    expect(await row()).toEqual({ id: CLUB.id, name: 'Club Renovado', zone: 'Belgrano', city: 'rosario', address: 'Calle Nueva 100', active: true });
+  });
+
+  it('un cambio parcial conserva el resto de los datos', async () => {
+    await updateClub(env.db, CLUB.id, { address: 'Otra dirección 55' });
+    expect(await row()).toEqual({ ...CLUB, address: 'Otra dirección 55', active: true });
+  });
+
+  it('desactiva y reactiva sin tocar los datos', async () => {
+    expect((await updateClub(env.db, CLUB.id, { active: false }))?.active).toBe(false);
+    expect(await row()).toEqual({ ...CLUB, active: false });
+    expect((await updateClub(env.db, CLUB.id, { active: true }))?.active).toBe(true);
+    expect(await row()).toEqual({ ...CLUB, active: true });
+  });
+
+  it.each([
+    ['nombre vacío', { name: '   ' }, /nombre/],
+    ['nombre de más de 80 caracteres', { name: 'x'.repeat(81) }, /80 caracteres/],
+    ['zona vacía', { zone: '' }, /zona/],
+    ['dirección vacía', { address: '  ' }, /dirección/],
+    ['ciudad desconocida', { city: 'narnia' }, /Ciudades válidas/],
+  ])('rechaza %s y el club conserva sus datos', async (_label, patch, message) => {
+    await expect(updateClub(env.db, CLUB.id, patch)).rejects.toThrow(ClubInputError);
+    await expect(updateClub(env.db, CLUB.id, patch)).rejects.toThrow(message);
+    expect(await row()).toEqual({ ...CLUB, active: true });
+  });
+
+  it('devuelve null si el club no existe', async () => {
+    expect(await updateClub(env.db, 'test-no-existe', { name: 'X' })).toBeNull();
   });
 });

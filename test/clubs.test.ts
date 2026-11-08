@@ -258,6 +258,59 @@ describe('clubes y canchas', () => {
     });
   });
 
+  describe('club desactivado', () => {
+    const deactivate = (id: string) => env.db.query(`UPDATE clubs SET active = false WHERE id = $1`, [id]);
+
+    it('un club desactivado sale del listado público y del detalle, pero conserva sus canchas', async () => {
+      const club = await createClub('test-desactivado');
+      const court = await createCourt(club, 'Cancha 1');
+      expect((await publicClubs()).map((c) => c.id)).toContain(club);
+
+      await deactivate(club);
+      expect((await publicClubs()).map((c) => c.id)).not.toContain(club);
+      expect((await call('GET', `/api/clubs/${club}`)).statusCode).toBe(404);
+      const [row] = await env.db.query<{ active: boolean; deleted_at: Date | null }>(
+        `SELECT active, deleted_at FROM courts WHERE id = $1`, [court],
+      );
+      expect(row).toEqual({ active: true, deleted_at: null });
+    });
+
+    it('reactivarlo lo devuelve al listado y al detalle tal como estaba', async () => {
+      const club = await createClub('test-reactivado');
+      await createCourt(club, 'Cancha 1', { price: 31000 });
+      await deactivate(club);
+      await env.db.query(`UPDATE clubs SET active = true WHERE id = $1`, [club]);
+
+      const found = (await publicClubs()).find((c) => c.id === club)!;
+      expect(found.courts.map((c) => [c.name, c.price])).toEqual([['Cancha 1', 31000]]);
+      expect((await call('GET', `/api/clubs/${club}`)).statusCode).toBe(200);
+    });
+
+    it('el total, las páginas y el filtro de deporte cuentan solo los clubes activos', async () => {
+      const before = body(await call('GET', '/api/clubs?limit=24')).total;
+      const club = await createClub('test-desactivado-total');
+      await createCourt(club, 'Cancha F8', { sport: 'Fútbol 8' });
+      await deactivate(club);
+
+      expect(body(await call('GET', '/api/clubs?limit=24')).total).toBe(before);
+      const f8 = body(await call('GET', '/api/clubs?limit=24&sport=' + encodeURIComponent('Fútbol 8'))).clubs;
+      expect(f8.map((c: { id: string }) => c.id)).not.toContain(club);
+    });
+
+    it('el admin de un club desactivado sigue entrando y gestionando sus canchas, y el club trae active: false', async () => {
+      const club = await createClub('test-desactivado-admin');
+      await createCourt(club, 'Cancha 1');
+      const admin = await loginAdmin(club);
+      await deactivate(club);
+
+      const list = await call('GET', '/api/club/courts', admin);
+      expect(list.statusCode).toBe(200);
+      expect(body(list).club.active).toBe(false);
+      expect(body(list).courts).toHaveLength(1);
+      expect((await call('POST', '/api/club/courts', admin, { name: 'Cancha 2', sport: 'Fútbol 5', price: 1000 })).statusCode).toBe(201);
+    });
+  });
+
   describe('detalle de un club', () => {
     it('devuelve el club con sus canchas activas, sin iniciar sesión', async () => {
       const res = await call('GET', '/api/clubs/estacion-norte');
@@ -300,7 +353,7 @@ describe('clubes y canchas', () => {
       const res = await call('GET', '/api/club/courts', admin);
       expect(res.statusCode).toBe(200);
       expect(res.headers['cache-control']).toBe('no-store');
-      expect(body(res).club).toEqual({ id: club, name: 'Club Lista', zone: 'Zona', city: 'buenos-aires', address: 'Calle 123' });
+      expect(body(res).club).toEqual({ id: club, name: 'Club Lista', zone: 'Zona', city: 'buenos-aires', address: 'Calle 123', active: true });
       expect(body(res).courts).toEqual([
         expect.objectContaining({ name: 'Cancha 1', sport: 'Fútbol 5', price: 31000, active: true }),
         expect.objectContaining({ name: 'Cancha 2', sport: 'Fútbol 7', price: 41000, active: false }),

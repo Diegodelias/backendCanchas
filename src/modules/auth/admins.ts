@@ -20,6 +20,12 @@ export interface NewAdmin {
 
 const emailSchema = z.email();
 
+export interface NewSuperadmin {
+  email: string;
+  name: string;
+  password: string;
+}
+
 async function clubExists(db: Database, clubId: string): Promise<boolean> {
   const rows = await db.query(`SELECT 1 FROM clubs WHERE id = $1`, [clubId]);
   return rows.length > 0;
@@ -64,6 +70,42 @@ export async function createAdmin(db: Database, input: NewAdmin): Promise<Sessio
     if (code === '23505') throw new AdminInputError(`Ya existe un usuario con el mail ${email}.`);
     // La clave foránea es la red de seguridad: el club dejó de existir entre la consulta y el insert.
     if (code === '23503') throw await unknownClub(db, clubId);
+    throw err;
+  }
+}
+
+/**
+ * Crea la cuenta de un superadmin: sin club y con contraseña. Es la única forma de crear una (la usa el comando
+ * `crear-superadmin`); no hay ruta de la API ni pantalla que vuelva superadmin a un usuario.
+ */
+export async function createSuperadmin(db: Database, input: NewSuperadmin): Promise<SessionUser> {
+  const email = input.email.trim();
+  const name = input.name.trim();
+
+  if (!emailSchema.safeParse(email).success) {
+    throw new AdminInputError(`El mail «${email}» no tiene un formato válido.`);
+  }
+  if (!name) throw new AdminInputError('Falta el nombre del superadmin.');
+  if (input.password.length < MIN_PASSWORD_LENGTH) {
+    throw new AdminInputError(`La contraseña debe tener ${MIN_PASSWORD_LENGTH} caracteres o más.`);
+  }
+
+  // Un mail tiene una sola cuenta, de cualquier rol: el comando nunca convierte una cuenta existente.
+  const existing = await db.query(`SELECT 1 FROM users WHERE lower(email) = lower($1)`, [email]);
+  if (existing.length > 0) throw new AdminInputError(`Ya existe un usuario con el mail ${email}.`);
+
+  const passwordHash = await hashPassword(input.password);
+  try {
+    const [row] = await db.query<UserRow>(
+      `INSERT INTO users (email, name, role, club_id, password_hash)
+       VALUES ($1, $2, 'superadmin', NULL, $3)
+       RETURNING id, email, name, role, club_id, password_hash`,
+      [email, name, passwordHash],
+    );
+    return toSessionUser(row!);
+  } catch (err) {
+    // Otro alta con el mismo mail pudo entrar entre la consulta y el insert.
+    if ((err as { code?: string }).code === '23505') throw new AdminInputError(`Ya existe un usuario con el mail ${email}.`);
     throw err;
   }
 }

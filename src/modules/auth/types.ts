@@ -1,4 +1,4 @@
-export type Role = 'player' | 'club_admin';
+export type Role = 'player' | 'club_admin' | 'superadmin';
 
 /** Lo que la API devuelve del usuario con sesión. */
 export interface SessionUser {

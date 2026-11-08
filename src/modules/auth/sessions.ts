@@ -10,6 +10,7 @@ const DAY = 24 * HOUR;
 /** Vida de la sesión sin uso, por rol. */
 const SESSION_TTL_MS: Record<Role, number> = {
   club_admin: 8 * HOUR,
+  superadmin: 8 * HOUR,
   player: 30 * DAY,
 };
 
@@ -37,7 +38,7 @@ export async function createSession(db: Database, userId: string, role: Role, no
 }
 
 /**
- * Devuelve el usuario de una sesión vigente, o null.
+ * Devuelve el usuario de una sesión vigente, o null. Un usuario dado de baja no tiene sesión aunque no se haya borrado.
  * Si pasaron más de `RENEW_AFTER_MS` desde el último uso, extiende la sesión.
  */
 export async function resolveSession(
@@ -49,7 +50,7 @@ export async function resolveSession(
   const rows = await db.query<UserRow & { session_id: string; last_used_at: Date }>(
     `SELECT s.id AS session_id, s.last_used_at, u.id, u.email, u.name, u.role, u.club_id, u.password_hash
        FROM sessions s JOIN users u ON u.id = s.user_id
-      WHERE s.token_hash = $1 AND s.expires_at > $2`,
+      WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.deactivated_at IS NULL`,
     [hashToken(token), now],
   );
   const row = rows[0];
