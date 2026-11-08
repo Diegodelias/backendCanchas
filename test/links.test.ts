@@ -4,6 +4,7 @@ import {
   createLoginToken,
   hasLiveInvite,
   LINK_TTL_MS,
+  PLAYER_HANDOVER_TTL_MS,
   pruneOldLinks,
   replaceInviteToken,
 } from '../src/modules/auth/links.js';
@@ -43,6 +44,17 @@ describe('links por propósito', () => {
       expect(await consumeLoginToken(env.db, purpose, vigente, at(14 * MINUTE))).toEqual({ ok: true, email: EMAIL });
       expect(await consumeLoginToken(env.db, purpose, vencido, at(15 * MINUTE + 1000))).toEqual({ ok: false, reason: 'expired' });
     }
+  });
+
+  it('un link de acceso con vencimiento propio (72 horas) sirve a las 71 y no a las 73, y sin él sigue en 15 minutos', async () => {
+    const largo = await createLoginToken(env.db, 'access', EMAIL, env.clock.now(), PLAYER_HANDOVER_TTL_MS);
+    const largoTarde = await createLoginToken(env.db, 'access', EMAIL, env.clock.now(), PLAYER_HANDOVER_TTL_MS);
+    const corto = await createLoginToken(env.db, 'access', EMAIL, env.clock.now());
+
+    expect(PLAYER_HANDOVER_TTL_MS).toBe(72 * HOUR);
+    expect(await consumeLoginToken(env.db, 'access', largo, at(71 * HOUR))).toEqual({ ok: true, email: EMAIL });
+    expect(await consumeLoginToken(env.db, 'access', largoTarde, at(73 * HOUR))).toEqual({ ok: false, reason: 'expired' });
+    expect(await consumeLoginToken(env.db, 'access', corto, at(16 * MINUTE))).toEqual({ ok: false, reason: 'expired' });
   });
 
   it('la invitación vale 72 horas: sirve a las 71 y no a las 73', async () => {

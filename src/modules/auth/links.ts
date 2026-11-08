@@ -19,6 +19,8 @@ export const LINK_TTL_MS: Record<LinkPurpose, number> = {
   password_reset: 15 * 60 * 1000,
   admin_invite: 72 * HOUR_MS,
 };
+/** Cuánto vive el link de acceso que un admin entrega a un jugador creado desde un panel: 72 horas. */
+export const PLAYER_HANDOVER_TTL_MS = 72 * HOUR_MS;
 const KEEP_MS = 24 * HOUR_MS;
 
 /** true si el mail ya hizo el máximo de pedidos en los últimos 15 minutos (se haya enviado o no un link). */
@@ -59,17 +61,21 @@ export async function pruneOldLinks(db: Database, now: Date): Promise<void> {
   await db.query(`DELETE FROM login_tokens WHERE expires_at < $1`, [before]);
 }
 
-/** Crea un link vigente según su propósito y devuelve su identificador (en la base queda solo el hash). */
+/**
+ * Crea un link vigente según su propósito y devuelve su identificador (en la base queda solo el hash).
+ * `ttlMs` reemplaza el vencimiento del propósito (por ejemplo, el link de 72 horas que un admin entrega a un jugador).
+ */
 export async function createLoginToken(
   db: Database,
   purpose: LinkPurpose,
   email: string,
   now: Date,
+  ttlMs: number = LINK_TTL_MS[purpose],
 ): Promise<string> {
   const token = randomBytes(32).toString('base64url');
   await db.query(
     `INSERT INTO login_tokens (purpose, email, token_hash, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)`,
-    [purpose, email, hashToken(token), now, new Date(now.getTime() + LINK_TTL_MS[purpose])],
+    [purpose, email, hashToken(token), now, new Date(now.getTime() + ttlMs)],
   );
   return token;
 }

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../../app.js';
 import { forbidden, notFound, unauthorized } from '../../lib/errors.js';
+import { createPlayer, createPlayerBody } from '../auth/players.js';
 import { resolveSession, SESSION_COOKIE } from '../auth/sessions.js';
 import { listClubBookings } from '../bookings/bookings.js';
 import { listClubRecordings } from '../recordings/recordings.js';
@@ -71,6 +72,22 @@ export async function clubsRoutes(app: FastifyInstance, deps: AppDeps) {
     }
     return user.clubId;
   }
+
+  // POST /api/club/players -> 201 { player, link, created, emailSent }.
+  // El admin de club crea un jugador por mail y obtiene un link de acceso de 72 horas para entregarle.
+  // Si el mail ya tiene cuenta (de jugador o admin) se rechaza: solo el superadmin puede pedir un link nuevo.
+  app.post('/club/players', async (req, reply) => {
+    await requireClubAdmin(req);
+    const { mailer, config } = deps;
+    if (!mailer) throw new Error('clubsRoutes necesita un mailer (lo arma buildApp).');
+    const { email, sendEmail } = createPlayerBody.parse(req.body);
+    const result = await createPlayer(
+      { db, mailer, publicAppUrl: config.PUBLIC_APP_URL, log: app.log },
+      { email, sendEmail, allowExisting: false, ip: req.ip, now: now() },
+    );
+    reply.header('Cache-Control', 'no-store');
+    return reply.status(201).send(result);
+  });
 
   // Arma los clubes públicos de `ids` (en ese orden) con sus canchas activas y no borradas, por orden de alta.
   async function loadPublicClubs(ids: string[]) {

@@ -8,8 +8,43 @@ const escapeHtml = (value: string) =>
 /**
  * Mail de acceso: el código de 6 dígitos bien visible arriba del botón y el link como alternativa.
  * El código no va en el asunto: se vería en las notificaciones del teléfono bloqueado.
+ *
+ * Sin `code` es el link que un admin entrega a un jugador creado desde un panel: no hay código, solo el link,
+ * que vence a las 72 horas (no a los 15 minutos del acceso pedido por el propio jugador).
  */
-export function accessEmail(to: string, link: string, code: string): MailMessage {
+export function accessEmail(to: string, link: string, code?: string): MailMessage {
+  const safeLink = escapeHtml(link);
+
+  if (code === undefined) {
+    const text = [
+      'Hola:',
+      '',
+      'Te creamos una cuenta en Canchas3. Usá este link para ingresar y ver tus jugadas:',
+      link,
+      '',
+      'El link vence en 72 horas y se puede usar una sola vez.',
+      'Si no esperabas este mensaje, ignoralo: nadie va a entrar a tu cuenta sin el link.',
+    ].join('\n');
+
+    const html = `<!doctype html>
+<html lang="es"><body style="margin:0;padding:24px;background:#f4f5f2;font-family:Arial,Helvetica,sans-serif;color:#101510">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+    <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;padding:28px">
+      <tr><td>
+        <h1 style="margin:0 0 12px;font-size:22px">Tu acceso a Canchas3</h1>
+        <p style="margin:0 0 12px;line-height:1.5">Te creamos una cuenta en Canchas3. Tocá el botón para ingresar y ver tus jugadas.</p>
+        <p style="margin:0 0 20px"><a href="${safeLink}" style="display:inline-block;background:#c8f03a;color:#101510;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:10px">Ingresar a Canchas3</a></p>
+        <p style="margin:0 0 6px;font-size:13px;color:#555">Si el botón no funciona, copiá este link en tu navegador:</p>
+        <p style="margin:0 0 20px;font-size:13px;word-break:break-all"><a href="${safeLink}" style="color:#1a5c2e">${safeLink}</a></p>
+        <p style="margin:0;font-size:13px;color:#555;line-height:1.5">El link vence en 72 horas y se puede usar una sola vez. Si no esperabas este mensaje, ignoralo: nadie va a entrar a tu cuenta sin el link.</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+
+    return { to, subject: ACCESS_EMAIL_SUBJECT, text, html };
+  }
+
   const text = [
     'Hola:',
     '',
@@ -23,7 +58,6 @@ export function accessEmail(to: string, link: string, code: string): MailMessage
     'Si no lo pediste vos, ignorá este mensaje: nadie va a entrar a tu cuenta.',
   ].join('\n');
 
-  const safeLink = escapeHtml(link);
   const safeCode = escapeHtml(code);
   const html = `<!doctype html>
 <html lang="es"><body style="margin:0;padding:24px;background:#f4f5f2;font-family:Arial,Helvetica,sans-serif;color:#101510">

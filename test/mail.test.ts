@@ -84,6 +84,26 @@ describe('contenido del mail de acceso', () => {
   });
 });
 
+describe('contenido del mail de acceso sin código (link entregado por un admin)', () => {
+  const mail = accessEmail('ana@mail.example', LINK);
+
+  it('lleva el link y el botón pero ningún bloque de código', () => {
+    expect(mail.subject).toBe(ACCESS_EMAIL_SUBJECT);
+    expect(mail.text).toContain(LINK);
+    expect(mail.html).toContain(`href="${LINK}"`);
+    expect(mail.text).not.toContain('Tu código');
+    expect(mail.text).not.toMatch(/\d{6}/);
+    expect(mail.html).not.toContain('escribí este código');
+  });
+
+  it('avisa que vence en 72 horas y no en 15 minutos', () => {
+    expect(mail.text).toContain('72 horas');
+    expect(mail.html).toContain('72 horas');
+    expect(mail.text).not.toContain('15 minutos');
+    expect(mail.html).not.toContain('15 minutos');
+  });
+});
+
 describe('createMailer', () => {
   const noLog = { info() {} };
 
