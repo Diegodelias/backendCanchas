@@ -33,6 +33,9 @@ describe('migraciones', () => {
       '1762900000000_canchas-borrado-e-imagen',
       '1763000000000_panel-superadmin',
       '1763100000000_horarios-y-reservas',
+      '1763200000000_grabaciones',
+      '1763300000000_fragmento-de-jugada',
+      '1763400000000_codigo-de-acceso',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -48,6 +51,7 @@ describe('migraciones', () => {
       'login_tokens',
       'pgmigrations',
       'plays',
+      'recordings',
       'sessions',
       'users',
     ]);
@@ -184,6 +188,31 @@ describe('migraciones', () => {
     expect(left!.n).toBe('0');
   });
 
+  it('las grabaciones rechazan datos inválidos y un turno repetido', async () => {
+    await db.query(`INSERT INTO clubs (id, name, zone, city, address) VALUES ('test-grab', 'G', 'Z', 'buenos-aires', 'D')`);
+    await db.query(`INSERT INTO courts (id, club_id, name, sport, price) VALUES ('test-grab-c1', 'test-grab', 'Cancha', 'Fútbol 5', 1000)`);
+
+    const rec = (id: string, startsAt: string, status: string, file: string | null) =>
+      db.query(
+        `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds)
+         VALUES ($1, 'test-grab-c1', $2, $3, $4, 60)`,
+        [id, startsAt, status, file],
+      );
+    await rec('r1', '2030-01-07T17:30:00-03:00', 'available', 'demo-partido.mp4'); // el inicio no tiene que ser en punto
+    await rec('r2', '2030-01-07T19:00:00-03:00', 'processing', null);
+    await rec('r3', '2030-01-07T20:00:00-03:00', 'unavailable', null);
+    await expect(rec('r4', '2030-01-07T17:30:00-03:00', 'processing', null)).rejects.toThrow(/recordings_court_start_key/);
+    await expect(rec('r5', '2030-01-08T17:00:00-03:00', 'listo', 'a.mp4')).rejects.toThrow(/recordings_status_check/);
+    await expect(rec('r6', '2030-01-08T17:00:00-03:00', 'available', null)).rejects.toThrow(/recordings_available_needs_video_check/);
+    for (const bad of ['../x.mp4', 'a/b.mp4', '.oculto.mp4', 'video.avi', 'con espacio.mp4', '']) {
+      await expect(rec('r7', '2030-01-08T17:00:00-03:00', 'available', bad), bad).rejects.toThrow(/recordings_video_file_check/);
+    }
+
+    await db.query(`DELETE FROM clubs WHERE id = 'test-grab'`); // arrastra canchas y grabaciones
+    const [left] = await db.query<{ n: string }>(`SELECT count(*) AS n FROM recordings WHERE court_id = 'test-grab-c1'`);
+    expect(left!.n).toBe('0');
+  });
+
   it('los checks de clubes y canchas rechazan datos inválidos', async () => {
     const club = (id: string) =>
       db.query(`INSERT INTO clubs (id, name, zone, city, address) VALUES ($1, 'N', 'Z', 'buenos-aires', 'D')`, [id]);
@@ -303,5 +332,109 @@ describe('migraciones', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('migraciones');
     expect(result.stdout).not.toContain('Server listening');
+  });
+  it('las jugadas llevan su fragmento: las existentes se completan y los checks rechazan lo inválido', async () => {
+    // Un esquema que llega hasta la migración anterior, con jugadas ya guardadas.
+    await db.query('DROP SCHEMA public CASCADE');
+    await db.query('CREATE SCHEMA public');
+    const partial = mkdtempSync(path.join(tmpdir(), 'canchas3-migr-clip-'));
+    try {
+      for (const f of readdirSync(MIGRATIONS_DIR)) {
+        if (f < '1763300000000_') copyFileSync(path.join(MIGRATIONS_DIR, f), path.join(partial, f));
+      }
+      await runMigrations(url, { dir: partial });
+      await db.query(`INSERT INTO users (id, email, role) VALUES ('11111111-1111-1111-1111-111111111111', 'p@mail.example', 'player')`);
+      const play = (id: string, ts: number, live: boolean) =>
+        db.query(
+          `INSERT INTO plays (id, user_id, match_id, title, capture_mode, timestamp_seconds, is_live_moment)
+           VALUES ($1, '11111111-1111-1111-1111-111111111111', 'm', 't', 'video', $2, $3)`,
+          [id, ts, live],
+        );
+      await play('21111111-1111-1111-1111-111111111111', 19, false);
+      await play('22222222-2222-2222-2222-222222222222', 6, false);
+      await play('23333333-3333-3333-3333-333333333333', 40, true);
+    } finally {
+      rmSync(partial, { recursive: true, force: true });
+    }
+
+    expect(await runMigrations(url)).toEqual(['1763300000000_fragmento-de-jugada', '1763400000000_codigo-de-acceso']);
+    const clips = await db.query<{ id: string; clip_start_seconds: number | null; clip_end_seconds: number | null }>(
+      `SELECT id, clip_start_seconds, clip_end_seconds FROM plays ORDER BY id`,
+    );
+    expect(clips).toEqual([
+      { id: '21111111-1111-1111-1111-111111111111', clip_start_seconds: 4, clip_end_seconds: 24 }, // 19 s: de 4 a 24
+      { id: '22222222-2222-2222-2222-222222222222', clip_start_seconds: 0, clip_end_seconds: 11 }, // 6 s: no baja de 0
+      { id: '23333333-3333-3333-3333-333333333333', clip_start_seconds: null, clip_end_seconds: null }, // en vivo
+    ]);
+
+    const withClip = (start: number | null, end: number | null, ts = 30) =>
+      db.query(
+        `INSERT INTO plays (user_id, match_id, title, capture_mode, timestamp_seconds, clip_start_seconds, clip_end_seconds)
+         VALUES ('11111111-1111-1111-1111-111111111111', 'm', 't', 'video', $1, $2, $3)`,
+        [ts, start, end],
+      );
+    await withClip(20, 45); // válido
+    await withClip(27, 30); // 3 s justos
+    await withClip(0, 120, 100); // 120 s justos
+    await expect(withClip(20, null)).rejects.toThrow(/plays_clip_pair_check/);
+    await expect(withClip(null, 40)).rejects.toThrow(/plays_clip_pair_check/);
+    await expect(withClip(-1, 30)).rejects.toThrow(/plays_clip_range_check/);
+    await expect(withClip(28, 30)).rejects.toThrow(/plays_clip_range_check/); // 2 s
+    await expect(withClip(0, 121, 100)).rejects.toThrow(/plays_clip_range_check/); // 121 s
+    await expect(withClip(40, 30)).rejects.toThrow(/plays_clip_(range|contains_mark)_check/); // fin antes del inicio
+    await expect(withClip(31, 40, 30)).rejects.toThrow(/plays_clip_contains_mark_check/); // no contiene el momento
+    await expect(withClip(10, 20, 30)).rejects.toThrow(/plays_clip_contains_mark_check/);
+    await db.query(`DELETE FROM users WHERE id = '11111111-1111-1111-1111-111111111111'`);
+  });
+
+  it('los links llevan el código: los existentes quedan sin código, se rechazan intentos negativos y se puede bajar', async () => {
+    await db.query('DROP SCHEMA public CASCADE');
+    await db.query('CREATE SCHEMA public');
+    const partial = mkdtempSync(path.join(tmpdir(), 'canchas3-migr-code-'));
+    try {
+      for (const f of readdirSync(MIGRATIONS_DIR)) {
+        if (f < '1763400000000_') copyFileSync(path.join(MIGRATIONS_DIR, f), path.join(partial, f));
+      }
+      await runMigrations(url, { dir: partial });
+      await db.query(
+        `INSERT INTO login_tokens (purpose, email, token_hash, created_at, expires_at)
+         VALUES ('access', 'viejo@mail.example', 'hash-viejo', now(), now() + interval '15 minutes')`,
+      );
+    } finally {
+      rmSync(partial, { recursive: true, force: true });
+    }
+
+    expect(await runMigrations(url)).toEqual(['1763400000000_codigo-de-acceso']);
+    const [old] = await db.query<{ code_hash: string | null; code_attempts: number }>(
+      `SELECT code_hash, code_attempts FROM login_tokens WHERE token_hash = 'hash-viejo'`,
+    );
+    expect(old).toEqual({ code_hash: null, code_attempts: 0 });
+
+    await expect(
+      db.query(
+        `INSERT INTO login_tokens (purpose, email, token_hash, created_at, expires_at, code_attempts)
+         VALUES ('access', 'x@mail.example', 'hash-x', now(), now() + interval '15 minutes', -1)`,
+      ),
+    ).rejects.toThrow(/login_tokens_code_attempts_check/);
+
+    // Bajar: las columnas desaparecen y los links siguen.
+    const { runner } = await import('node-pg-migrate');
+    await runner({
+      databaseUrl: url,
+      dir: MIGRATIONS_DIR,
+      direction: 'down',
+      count: 1,
+      migrationsTable: 'pgmigrations',
+      checkOrder: true,
+      singleTransaction: true,
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    });
+    const cols = await db.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'login_tokens'`,
+    );
+    expect(cols.map((c) => c.column_name)).not.toContain('code_hash');
+    expect(cols.map((c) => c.column_name)).not.toContain('code_attempts');
+    expect((await db.query(`SELECT 1 FROM login_tokens WHERE token_hash = 'hash-viejo'`)).length).toBe(1);
+    await runMigrations(url);
   });
 });

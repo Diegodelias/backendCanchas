@@ -16,7 +16,8 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql",
     "crear-admin": "tsx --env-file=.env src/cli/crear-admin.ts",
     "crear-superadmin": "tsx --env-file=.env src/cli/crear-superadmin.ts",
-    "crear-club": "tsx --env-file=.env src/cli/crear-club.ts"
+    "crear-club": "tsx --env-file=.env src/cli/crear-club.ts",
+    "cargar-grabaciones-demo": "tsx --env-file=.env src/cli/cargar-grabaciones-demo.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",

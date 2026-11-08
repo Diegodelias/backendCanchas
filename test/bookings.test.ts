@@ -218,6 +218,7 @@ describe('reservas de turnos', () => {
       const res = await book(at(17));
       expect(res.statusCode).toBe(201);
       expect(kit.body(res).emailSent).toBe(false);
+      expect(env.mailer.attempts).toBe(1); // la confirmación se espera en la respuesta: no se reintenta
       expect(await rows()).toHaveLength(1);
       expect(await freeTimes()).toEqual(['16:00', '18:00']);
 

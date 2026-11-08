@@ -59,6 +59,12 @@ export function toArgentina(instant: Date): { date: string; hour: number } {
 
 export const formatHour = (hour: number) => `${pad(hour)}:00`;
 
+/** Hora y minutos (en Argentina) de un instante, como `HH:MM`. */
+export function formatTimeOfDay(instant: Date): string {
+  const shifted = new Date(instant.getTime() - ARGENTINA_OFFSET_HOURS * HOUR_MS);
+  return `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`;
+}
+
 /** Primer y último día que se pueden reservar, desde el reloj `now`. */
 export function bookingWindow(now: Date): { from: string; to: string } {
   const from = todayInArgentina(now);

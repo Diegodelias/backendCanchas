@@ -38,6 +38,10 @@ services:
       # Los links de acceso se envían al Mailpit del compose y apuntan al frontend de desarrollo.
       SMTP_URL: smtp://mailpit:1025
       PUBLIC_APP_URL: http://localhost:3000
+      # Los videos de las grabaciones se montan de solo lectura desde backend/videos.
+      VIDEOS_DIR: /data/videos
+    volumes:
+      - ./videos:/data/videos:ro
     ports:
       # Puerto del host; se puede cambiar con API_PORT si el 3100 está ocupado (p. ej. por el PoC de RTSP).
       - "${API_PORT:-3100}:3100"

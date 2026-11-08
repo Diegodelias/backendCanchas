@@ -106,18 +106,22 @@ El club tiene que **existir en la base** (ver «Clubes y canchas»): los de ejem
 
 ## Acceso de jugadores por mail
 
-El jugador no tiene contraseña: pone su mail y recibe un link de un solo uso que vence a los **15 minutos**. El link apunta a la página `/acceso` del frontend (`<PUBLIC_APP_URL>/acceso?token=…`), que pide confirmar con un botón; recién ahí el backend consume el link. Así un programa del correo que abre el link antes que la persona no lo gasta.
+El jugador no tiene contraseña: pone su mail y recibe un mail con **un código de 6 dígitos y un link**, de un solo uso, que vencen a los **15 minutos**. Usar uno invalida el otro (viven en la misma fila de `login_tokens`). El link apunta a la página `/acceso` del frontend (`<PUBLIC_APP_URL>/acceso?token=…`), que pide confirmar con un botón; recién ahí el backend consume el link. Así un programa del correo que abre el link antes que la persona no lo gasta.
 
 | Método y ruta | Respuestas |
 |---|---|
 | `POST /api/auth/player/request-link` `{ email }` | `202 { message }` (**el mismo para cualquier mail válido**, tenga o no cuenta, incluso si es de un admin); `429 too_many_requests` (3 pedidos por mail cada 15 minutos); `400 validation_error` |
 | `POST /api/auth/player/confirm` `{ token }` | `200 { user }` con la cookie `c3_session`; `410 link_used`; `410 link_expired` (vencido o inexistente) |
+| `POST /api/auth/player/confirm-code` `{ email, code }` | `200 { user }` con la cookie `c3_session` (igual que el link; crea la cuenta si es el primer ingreso); `400 invalid_code` (código equivocado, vencido, ya usado, formato inválido, mail sin pedidos o mail de un admin: **el mismo error para todos**); `429 too_many_code_attempts` |
 
 - La cuenta de un mail nuevo se crea al confirmar el link, solo con el mail (`user.name` es `null`). Con el mail de un admin no se envía nada.
 - La sesión del jugador dura **30 días sin uso** y se renueva mientras entra al sitio. Puede tener varias a la vez; `POST /api/auth/logout` cierra solo la del dispositivo actual.
 - Pedir un link nuevo no invalida los anteriores; cada uno vence solo.
 - Los links de acceso y los de recuperación de contraseña comparten tablas pero llevan un propósito (`access` o `password_reset`): uno no sirve para el otro.
-- El mail se envía en segundo plano, para que la respuesta no tarde distinto según el caso. Si el envío falla, solo se registra el tipo de error (sin el link ni el mail).
+- **El código:** son 6 dígitos (acepta el mail en mayúsculas y el código pegado con espacios). En la base solo queda un hash (`sha256(mail en minúsculas + ':' + código)`), nunca el código. El asunto del mail no lo lleva (se vería en las notificaciones del teléfono bloqueado).
+- **Intentos:** cada código equivocado suma un intento a **todos** los pedidos vigentes del mail, así que pedir códigos nuevos no multiplica los intentos. A los **5 errores** el código deja de aceptarse (`429 too_many_code_attempts`, ni siquiera el correcto) y hay que pedir uno nuevo; el link de ese pedido sigue valiendo hasta vencer.
+- **Entrega:** el mail se envía en segundo plano, para que la respuesta no tarde distinto según el caso. Si el servidor de mail falla, se **reintenta hasta 3 veces** (esperas de 2 y 10 segundos) y, si se agotan, se registra un solo error con el tipo de falla y los intentos, sin el mail, el link ni el código. La recuperación de contraseña de admin se envía igual; la invitación de un admin y la confirmación de una reserva esperan el resultado y **no** se reintentan. No hay cola: si el proceso se reinicia entre intentos, el jugador usa «Reenviar».
+- **Log:** por cada mail enviado por SMTP queda una línea con los destinatarios aceptados y rechazados y el código de respuesta del servidor (nunca las direcciones). Al arrancar, el backend registra por qué medio salen los mails y, si es el buzón de pruebas o la consola, una advertencia `ATENCIÓN: … NO llegan a ninguna casilla real`.
 
 ### Mails en desarrollo
 
@@ -126,6 +130,18 @@ El jugador no tiene contraseña: pone su mail y recibe un link de un solo uso qu
 | vacía (`npm run dev` sin Docker) | El link **se imprime en el log del backend** y no se envía nada |
 | `smtp://mailpit:1025` (`docker compose`) | Se envía a **Mailpit**, un buzón de pruebas: abrí `http://localhost:8025` para ver los mails y tocar el link (`MAILPIT_UI_PORT` cambia el puerto) |
 | una URL de un proveedor | Se envía de verdad |
+
+> **Si «el mail no llega» en desarrollo:** mirá el log de arranque. `docker-compose.override.yml` apunta `SMTP_URL` a Mailpit (`smtp://mailpit:1025`); construir con `SMTP_URL=smtp://mailpit:1025 docker compose up -d --build api` manda **todo** al buzón de pruebas, aunque `backend/.env` tenga un SMTP real. Para volver al SMTP real de `.env` alcanza con `docker compose up -d api` (sin esa variable). Para comprobarlo: pedí el ingreso con un mail real y buscá en el log `Mail entregado al servidor SMTP` con `responseCode` 250.
+
+### Para que los mails lleguen a la bandeja (y no a correo no deseado)
+
+Que el servidor acepte el mail no garantiza que llegue a la bandeja principal. Con un dominio propio configurá:
+
+- **Remitente del mismo dominio:** `MAIL_FROM` con una dirección de tu dominio (no `@gmail.com` ni el `canchas3.example` por defecto).
+- **SPF:** registro TXT que autoriza al servidor de tu proveedor SMTP a enviar por tu dominio.
+- **DKIM:** firma del proveedor, publicada como registro DNS (te lo da el proveedor).
+- **DMARC:** registro TXT `_dmarc` con una política (empezá con `p=none` y mirá los reportes).
+- Usá el SMTP de un proveedor de envío (no una casilla personal) y probá con un mail real a Gmail y Outlook antes de abrir el sitio a jugadores.
 
 Variables: `PUBLIC_APP_URL` (dirección del frontend; por defecto `http://localhost:3000`), `SMTP_URL` y `MAIL_FROM` (por defecto `Canchas3 <no-reply@canchas3.example>`). **En producción `PUBLIC_APP_URL` y `SMTP_URL` son obligatorias**: sin ellas la API no arranca, para no dejar en el log los links de acceso de los jugadores. Guardá `SMTP_URL` como secreto de la plataforma.
 
@@ -136,11 +152,22 @@ Cada jugada es de su dueño: una jugada ajena responde `404`, y los admins de cl
 | Método y ruta | Respuestas |
 |---|---|
 | `GET /api/plays` | `200 { plays }`, las del jugador, de la más reciente a la más antigua |
-| `POST /api/plays` `{ matchId, title, category?, captureMode?, timestamp, isLiveMoment? }` | `201 { play }`; `409 plays_limit_reached` (tope de 200 por jugador); `400 validation_error` |
+| `POST /api/plays` `{ matchId, title, category?, captureMode?, timestamp, isLiveMoment?, clipStart?, clipEnd? }` | `201 { play }`; `409 plays_limit_reached` (tope de 200 por jugador); `400 validation_error` (también por un fragmento inválido) |
 | `PATCH /api/plays/:id` `{ title?, category? }` | `200 { play }`; `404` |
+| `GET /api/plays/:id/clip` | El mp4 del fragmento de la jugada (ver «Fragmento de una jugada»); `404` (ajena, inexistente, en vivo o con la grabación no disponible); `503 clip_busy`; `504 clip_timeout`; `502 clip_failed` |
 | `DELETE /api/plays/:id` | `204`; `404` |
 
-`play` es `{ id, matchId, title, category, captureMode, timestamp, isLiveMoment, createdAt }`. El backend no guarda el club, la cancha, el horario ni el video: salen del `matchId` en el frontend, porque los partidos siguen siendo datos de ejemplo (por eso `matchId` es un texto de hasta 100 caracteres, sin validar contra partidos).
+`play` es `{ id, matchId, title, category, captureMode, timestamp, isLiveMoment, clipStart, clipEnd, createdAt, recording }`. `matchId` es un texto de hasta 100 caracteres que **no se valida** contra ninguna grabación: puede ser una grabación, una cámara en vivo o algo que ya no existe. `recording` trae los datos de la grabación (ver «Grabaciones») o `null` si el `matchId` no corresponde a una grabación visible.
+
+### Fragmento de una jugada
+
+Cada jugada de una grabación guarda su **fragmento**: `clipStart` y `clipEnd`, en segundos del video.
+
+- **Por defecto** es de 15 s antes a 5 s después del momento marcado (`timestamp`), con el inicio mínimo en 0. Si el pedido trae el fragmento, tiene que traer los dos valores, durar de **3 a 120 segundos**, tener el fin posterior al inicio y **contener** el momento marcado; si no, `400 validation_error`. Una jugada **en vivo** (`isLiveMoment`) guarda `null` en los dos (no hay grabación), aunque el pedido traiga un fragmento. La migración completó las jugadas anteriores con el fragmento por defecto. El fragmento no se edita después de guardar la jugada.
+- **Descarga:** `GET /api/plays/:id/clip` corta con ffmpeg el video de la grabación entre `clipStart` y `clipEnd` y lo entrega como `video/mp4` (`Content-Disposition: attachment; filename="jugada-<título>.mp4"`). Solo la puede pedir el jugador dueño. El video sale de la grabación guardada en la base: el pedido **no puede** indicar ningún archivo ni dirección (cualquier parámetro se ignora). No hay descarga del partido completo.
+- **Cómo se corta:** se recodifica (H.264 + AAC, `-preset veryfast`) con un alto máximo de **720**, a un archivo temporal en la carpeta temporal del sistema (`canchas3-clip-*.mp4`) que se borra siempre al terminar, falle, venza o el jugador corte la descarga. No se guardan los fragmentos generados. Si el fragmento pasa del final del video, sale hasta donde haya video; si empieza después del final, `502 clip_failed`.
+- **Límites para el VPS:** como mucho `CLIP_MAX_CONCURRENT` cortes a la vez (por defecto **2**; el siguiente recibe `503 clip_busy` con «probá en unos segundos», sin cola) y como mucho `CLIP_TIMEOUT_MS` de trabajo por corte (por defecto **60000**; al vencer, se detiene ffmpeg y responde `504 clip_timeout` con «probá con uno más corto»). Los dos valores se cambian por variable de entorno.
+- **Demostración:** el video de demostración dura **10 s**, así que un fragmento por defecto de 20 s sale de unos 10 s.
 
 ## Clubes y canchas
 
@@ -226,6 +253,40 @@ El superadmin no conoce ni elige la contraseña de nadie ni cambia un mail:
 
 El estado de un admin no se guarda: sale de `deactivated_at` y `password_hash`.
 
+## Grabaciones
+
+Las grabaciones de partidos son **registros reales de la base** (tabla `recordings`): un turno (cancha + inicio), un estado (`available`, `processing`, `unavailable` o `error`), la duración y el **nombre** del archivo de video. No tienen título, marcador ni torneo. Por ahora el video de todas es **uno solo, de demostración** (`videos/demo-partido.mp4`); el en vivo es otra cosa (ver «Cámara en vivo») y no se guarda como grabación.
+
+| Método y ruta | Quién | Respuestas |
+|---|---|---|
+| `GET /api/recordings?clubId=&courtId=&date=AAAA-MM-DD` | Cualquiera, sin sesión | `200 { recordings }`: solo las **reproducibles** (`available` con archivo), de la más reciente a la más antigua; `400 validation_error` si la fecha no es válida |
+| `GET /api/recordings/:id` | Cualquiera, sin sesión | `200 { recording }` en **cualquier estado** (el reproductor explica por qué no se puede ver); `404` si no existe, el club está desactivado o la cancha está borrada |
+| `GET /api/club/recordings` | Admin de club | `200 { recordings }` de las canchas de su club, en cualquier estado, solo lectura; `401` / `403` |
+| `GET /api/videos/:file` | Cualquiera, sin sesión | El mp4 con soporte de `Range` (`200`, `206`, `416`); `404` si el nombre no es un mp4 simple o no existe |
+
+- **Forma de una grabación:** `{ id, club: { id, name }, court: { id, name }, startsAt, date, time, status, durationSeconds, videoUrl }`. `date` y `time` están en hora de Argentina; `videoUrl` (`/api/videos/<archivo>`) solo viene si está `available`.
+- **Visibilidad:** un club desactivado o una cancha borrada esconden sus grabaciones; una cancha **desactivada** conserva las suyas (es historial).
+- **Videos:** la API los sirve desde `VIDEOS_DIR` (por defecto `./videos`; con Docker, `./videos` se monta de solo lectura en `/data/videos`). El nombre se valida (`^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$`) y nunca se lee fuera de la carpeta. Cuando haya un nginx delante, puede servir esa misma carpeta sin cambiar el modelo.
+- **Jugadas:** cada jugada de `/api/plays` trae `recording` (los datos de su grabación) o `null` si su partido no corresponde a una grabación visible: una jugada en vivo, o una cuya grabación ya no existe (se conserva y se muestra como no disponible).
+
+### Cargar las grabaciones de demostración
+
+Un comando crea (o renueva) 7 grabaciones de ejemplo en cada uno de los **3 días anteriores a hoy** (hora de Argentina), con los ids de siempre para ayer (`match-en-f5-1900`, …) y sufijo `-d2` / `-d3` para los otros. Es **idempotente**: se puede volver a correr cuando las fechas queden viejas y no duplica nada. **No corre solo** al arrancar la API.
+
+```bash
+# Desarrollo local (lee DATABASE_URL y VIDEOS_DIR del .env)
+npm run cargar-grabaciones-demo
+
+# Dentro del contenedor (con docker compose up corriendo)
+docker compose exec api node dist/cli/cargar-grabaciones-demo.js
+```
+
+Si falta `videos/demo-partido.mp4` no carga nada y lo avisa; una cancha de ejemplo que no existe se omite con un aviso, y nunca pisa una grabación real que ocupe el mismo turno.
+
+### Pendiente: almacenamiento de grabaciones reales
+
+Esto sirve para la demostración. **No está resuelto** cómo se guardan las grabaciones reales: cuántas habrá y cuánto pesan, cuánto tiempo se conservan (retención), cuánto disco hay en el servidor y dónde viven los videos reales (disco del VPS, volumen o almacenamiento externo). Tampoco hay carga desde el panel ni grabación automática desde la cámara, y los videos son públicos (sin política de acceso). Antes de grabar de verdad hay que decidir todo eso.
+
 ## Cámara en vivo
 
 `GET /api/live/:cameraId/stream` lee el RTSP de la cámara con ffmpeg y entrega MP4 fragmentado, listo para un `<video>`. Funciona con **una sola cámara**, configurada por variables de entorno:
@@ -307,6 +368,7 @@ El destino final son Dokploy y Coolify. En ambos, **la unidad de despliegue es e
 | `npm run crear-admin -- …` | Crea un admin de club (ver «Crear una cuenta de prueba») |
 | `npm run crear-superadmin -- …` | Crea un superadmin (ver «Crear un superadmin») |
 | `npm run crear-club -- …` | Da de alta un club (ver «Dar de alta un club») |
+| `npm run cargar-grabaciones-demo` | Carga o renueva las grabaciones de demostración (ver «Grabaciones») |
 
 ### Tests contra la base
 
@@ -332,6 +394,9 @@ En PowerShell: `$env:TEST_DATABASE_URL="postgres://canchas3:canchas3@localhost:5
 | `PUBLIC_APP_URL` | En producción | `http://localhost:3000` |
 | `SMTP_URL` | En producción | vacía (el link se imprime en el log) |
 | `MAIL_FROM` | No | `Canchas3 <no-reply@canchas3.example>` |
+| `VIDEOS_DIR` | No | `./videos` (con Docker, `/data/videos`) |
+| `CLIP_MAX_CONCURRENT` | No | `2` (cortes de fragmentos a la vez) |
+| `CLIP_TIMEOUT_MS` | No | `60000` (tiempo máximo de cada corte) |
 
 Las variables de la cámara están en la sección "Cámara en vivo". Si falta `DATABASE_URL`, el arranque termina con un mensaje que lo indica.
 

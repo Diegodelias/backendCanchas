@@ -27,6 +27,13 @@ const schema = z
     LIVE_FIRST_BYTE_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
     FFMPEG: z.preprocess(emptyToUndefined, z.string().default('ffmpeg')),
 
+    // Carpeta de los videos de las grabaciones (la API los sirve y, más adelante, los corta con ffmpeg).
+    VIDEOS_DIR: z.preprocess(emptyToUndefined, z.string().default('./videos')),
+
+    // Corte del fragmento de una jugada (ffmpeg): cuántos a la vez y cuánto puede trabajar cada uno.
+    CLIP_MAX_CONCURRENT: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(2)),
+    CLIP_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(60000)),
+
     // Cookie de sesión con `Secure` (solo viaja por HTTPS). Vacía: sí en production, no en el resto.
     SESSION_COOKIE_SECURE: z.preprocess(emptyToUndefined, z.enum(['true', 'false']).optional()),
 

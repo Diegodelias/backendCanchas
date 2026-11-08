@@ -1,9 +1,11 @@
 import nodemailer from 'nodemailer';
 import { describe, expect, it } from 'vitest';
+import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { createFakeDatabase, FakeMailer, testConfig } from './helpers.js';
 import { accessEmail, ACCESS_EMAIL_SUBJECT } from '../src/modules/mail/accessEmail.js';
 import { inviteEmail, inviteEmailSubject } from '../src/modules/mail/inviteEmail.js';
-import { ConsoleMailer, createMailer, SmtpMailer } from '../src/modules/mail/mailer.js';
+import { ConsoleMailer, createMailer, describeMailDelivery, SmtpMailer } from '../src/modules/mail/mailer.js';
 
 const LINK = 'http://localhost:3000/acceso?token=abc123';
 const base = { DATABASE_URL: 'postgres://x/y' };
@@ -52,7 +54,7 @@ describe('contenido del mail de invitación de un admin', () => {
 });
 
 describe('contenido del mail de acceso', () => {
-  const mail = accessEmail('ana@mail.example', LINK);
+  const mail = accessEmail('ana@mail.example', LINK, '048213');
 
   it('tiene el asunto, el link como texto y un botón', () => {
     expect(mail.to).toBe('ana@mail.example');
@@ -63,6 +65,12 @@ describe('contenido del mail de acceso', () => {
     expect(mail.html).toContain('Ingresar a Canchas3');
   });
 
+  it('muestra el código de 6 dígitos sin ponerlo en el asunto', () => {
+    expect(mail.text).toContain('Tu código: 048213');
+    expect(mail.html).toContain('048213');
+    expect(mail.subject).not.toMatch(/\d{6}/);
+  });
+
   it('avisa que vence en 15 minutos y que se puede ignorar', () => {
     expect(mail.text).toContain('15 minutos');
     expect(mail.text).toContain('ignorá este mensaje');
@@ -70,7 +78,7 @@ describe('contenido del mail de acceso', () => {
   });
 
   it('escapa el HTML de la dirección', () => {
-    const risky = accessEmail('a@b.example', 'http://x.example/acceso?a=1&b="2"<3');
+    const risky = accessEmail('a@b.example', 'http://x.example/acceso?a=1&b="2"<3', '048213');
     expect(risky.html).not.toContain('"2"<3');
     expect(risky.html).toContain('&amp;b=&quot;2&quot;&lt;3');
   });
@@ -102,7 +110,7 @@ describe('ConsoleMailer', () => {
   it('escribe el link en el log y no envía nada', async () => {
     const lines: { obj: object; msg: string }[] = [];
     const mailer = new ConsoleMailer({ info: (obj, msg) => lines.push({ obj, msg }) });
-    await mailer.send(accessEmail('ana@mail.example', LINK));
+    await mailer.send(accessEmail('ana@mail.example', LINK, '048213'));
     expect(lines).toHaveLength(1);
     expect(lines[0]!.msg).toContain(LINK);
     expect(lines[0]!.obj).toMatchObject({ to: 'ana@mail.example', subject: 'Tu acceso a Canchas3' });
@@ -121,7 +129,7 @@ describe('SmtpMailer', () => {
       return info;
     }) as typeof transport.sendMail;
 
-    await mailer.send(accessEmail('ana@mail.example', LINK));
+    await mailer.send(accessEmail('ana@mail.example', LINK, '048213'));
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.envelope.to).toEqual(['ana@mail.example']);
@@ -134,6 +142,112 @@ describe('SmtpMailer', () => {
   it('propaga el error si el servidor SMTP falla', async () => {
     const transport = nodemailer.createTransport({ host: '127.0.0.1', port: 1, connectionTimeout: 1000 });
     const mailer = new SmtpMailer(transport, 'Canchas3 <hola@canchas3.example>');
-    await expect(mailer.send(accessEmail('ana@mail.example', LINK))).rejects.toThrow();
+    await expect(mailer.send(accessEmail('ana@mail.example', LINK, '048213'))).rejects.toThrow();
+  });
+});
+
+describe('resultado de cada envío en el log', () => {
+  const lines: { level: string; obj: Record<string, unknown>; msg: string }[] = [];
+  const log = {
+    info: (obj: object, msg: string) => void lines.push({ level: 'info', obj: obj as Record<string, unknown>, msg }),
+    warn: (obj: object, msg: string) => void lines.push({ level: 'warn', obj: obj as Record<string, unknown>, msg }),
+  };
+
+  function mailerWith(sendMail: () => Promise<unknown>) {
+    lines.length = 0;
+    return new SmtpMailer({ sendMail } as never, 'Canchas3 <hola@canchas3.example>', log);
+  }
+
+  it('registra que el servidor aceptó el mail, con los aceptados, los rechazados y el código, sin direcciones', async () => {
+    const mailer = mailerWith(async () => ({ accepted: ['ana@mail.example'], rejected: [], response: '250 2.0.0 Ok: queued' }));
+    await mailer.send(accessEmail('ana@mail.example', LINK, '048213'));
+    expect(lines).toEqual([
+      { level: 'info', obj: { accepted: 1, rejected: 0, responseCode: '250' }, msg: 'Mail entregado al servidor SMTP' },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain('ana@mail.example');
+  });
+
+  it('registra la cantidad de destinatarios rechazados, no la dirección', async () => {
+    const mailer = mailerWith(async () => ({ accepted: [], rejected: ['ana@mail.example'], response: '250 Ok' }));
+    await mailer.send(accessEmail('ana@mail.example', LINK, '048213'));
+    expect(lines[0]!.obj).toMatchObject({ accepted: 0, rejected: 1 });
+    expect(JSON.stringify(lines)).not.toContain('ana@mail.example');
+  });
+
+  it('si falla, registra el tipo de falla sin datos personales y propaga el error', async () => {
+    const mailer = mailerWith(async () => {
+      throw Object.assign(new Error('535 credenciales de ana@mail.example'), { code: 'EAUTH' });
+    });
+    await expect(mailer.send(accessEmail('ana@mail.example', LINK, '048213'))).rejects.toThrow();
+    expect(lines).toEqual([
+      { level: 'warn', obj: { errorName: 'Error', code: 'EAUTH' }, msg: 'El servidor SMTP no aceptó el mail' },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain('ana@mail.example');
+    expect(JSON.stringify(lines)).not.toContain(LINK);
+  });
+});
+
+describe('medio de entrega al arrancar', () => {
+  it('un SMTP real: dice servidor y puerto, sin credenciales y sin advertencia', () => {
+    const d = describeMailDelivery('smtps://ana%40club.example:clave-secreta@mail.club.example:465');
+    expect(d.info).toContain('mail.club.example:465');
+    expect(d.warning).toBeUndefined();
+    expect(JSON.stringify(d)).not.toContain('clave-secreta');
+    expect(JSON.stringify(d)).not.toContain('ana');
+  });
+
+  it('usa el puerto por defecto cuando la dirección no lo trae', () => {
+    expect(describeMailDelivery('smtp://mail.club.example').info).toContain('mail.club.example:25');
+    expect(describeMailDelivery('smtps://mail.club.example').info).toContain('mail.club.example:465');
+  });
+
+  it('el buzón de pruebas (mailpit o puerto 1025) advierte que no llega a casillas reales', () => {
+    for (const url of ['smtp://mailpit:1025', 'smtp://localhost:1025', 'smtp://mailpit:2525']) {
+      const d = describeMailDelivery(url);
+      expect(d.warning).toContain('NO llegan a ninguna casilla real');
+      expect(d.warning).toContain('buzón de pruebas');
+    }
+  });
+
+  it('sin SMTP_URL dice que los mails se imprimen en el log y advierte', () => {
+    const d = describeMailDelivery(undefined);
+    expect(d.info).toContain('se imprimen en este log');
+    expect(d.warning).toContain('NO llegan a ninguna casilla real');
+  });
+
+  it('una dirección SMTP inválida no rompe ni muestra la dirección', () => {
+    const d = describeMailDelivery('esto no es una url con clave-secreta');
+    expect(d.info).not.toContain('clave-secreta');
+  });
+});
+
+describe('registro de arranque', () => {
+  async function startupLog(overrides: Record<string, string>) {
+    const logs: string[] = [];
+    const app = await buildApp({
+      config: testConfig(overrides),
+      db: createFakeDatabase(),
+      mailer: new FakeMailer(),
+      logStream: { write: (m) => void logs.push(m) },
+    });
+    await app.close();
+    return logs.join('\n');
+  }
+
+  it('con un SMTP real registra el servidor y no advierte ni muestra credenciales', async () => {
+    const text = await startupLog({ SMTP_URL: 'smtps://ana:clave-secreta@mail.club.example:465' });
+    expect(text).toContain('mail.club.example:465');
+    expect(text).not.toContain('ATENCIÓN');
+    expect(text).not.toContain('clave-secreta');
+  });
+
+  it('con el buzón de pruebas registra una advertencia', async () => {
+    expect(await startupLog({ SMTP_URL: 'smtp://mailpit:1025' })).toContain('ATENCIÓN');
+  });
+
+  it('sin SMTP registra la advertencia de consola', async () => {
+    const text = await startupLog({});
+    expect(text).toContain('se imprimen en este log');
+    expect(text).toContain('ATENCIÓN');
   });
 });

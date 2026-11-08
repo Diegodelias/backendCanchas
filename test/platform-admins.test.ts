@@ -210,6 +210,7 @@ describe('plataforma: invitar admins de club', () => {
       expect(res.statusCode).toBe(201);
       expect(body(res).emailSent).toBe(false);
       expect(body(res).admin).toMatchObject({ status: 'invited' });
+      expect(env.mailer.attempts).toBe(1); // la invitación se espera en la respuesta: no se reintenta
       expect(await userByEmail('ana@club.example')).toMatchObject({ password_hash: null, club_id: club });
 
       const logText = logs.join('\n');

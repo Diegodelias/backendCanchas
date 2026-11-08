@@ -8,7 +8,8 @@ import { bookingsRoutes } from './modules/bookings/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { clubsRoutes } from './modules/clubs/routes.js';
 import { platformRoutes } from './modules/platform/routes.js';
-import { createMailer, type Mailer } from './modules/mail/mailer.js';
+import { createMailer, describeMailDelivery, type Mailer } from './modules/mail/mailer.js';
+import { recordingsRoutes } from './modules/recordings/routes.js';
 import { playsRoutes } from './modules/plays/routes.js';
 import type { FfmpegLauncher } from './modules/live/launcher.js';
 import { liveRoutes } from './modules/live/routes.js';
@@ -22,6 +23,8 @@ export interface AppDeps {
   logStream?: { write(message: string): void };
   /** Envío de mails; por defecto SMTP si hay SMTP_URL y, si no, la consola. Las pruebas lo reemplazan. */
   mailer?: Mailer;
+  /** Esperas entre reintentos de los mails en segundo plano; por defecto 2 y 10 s. Las pruebas las acortan. */
+  mailRetryDelaysMs?: readonly number[];
   /** Reloj; por defecto la hora real. Las pruebas lo adelantan para vencer sesiones y bloqueos. */
   now?: () => Date;
 }
@@ -48,6 +51,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // Los módulos reciben el mismo mailer que usa la app (el de las pruebas, si se inyectó).
   deps = { ...deps, mailer: deps.mailer ?? createMailer(deps.config, app.log) };
+
+  // Una sola vez al arrancar: por dónde salen los mails y, si no es una casilla real, una advertencia bien visible.
+  const delivery = describeMailDelivery(deps.config.SMTP_URL);
+  app.log.info(delivery.info);
+  if (delivery.warning) app.log.warn(delivery.warning);
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
@@ -110,6 +118,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await api.register(playsRoutes, deps);
       await api.register(clubsRoutes, deps);
       await api.register(bookingsRoutes, deps);
+      await api.register(recordingsRoutes, deps);
       await api.register(platformRoutes, deps);
     },
     { prefix: '/api' },

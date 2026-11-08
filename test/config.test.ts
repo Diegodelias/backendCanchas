@@ -22,6 +22,24 @@ describe('loadConfig', () => {
     expect(config.LIVE_CAMERA_CHANNEL).toBe('201');
     expect(config.LIVE_MAX_VIEWERS).toBe(3);
     expect(config.FFMPEG).toBe('ffmpeg');
+    expect(config.VIDEOS_DIR).toBe('./videos');
+    expect(config.CLIP_MAX_CONCURRENT).toBe(2);
+    expect(config.CLIP_TIMEOUT_MS).toBe(60000);
+  });
+
+  it('toma los límites del corte del entorno, trata las vacías como no definidas y rechaza valores inválidos', () => {
+    const config = loadConfig({ ...base, CLIP_MAX_CONCURRENT: '4', CLIP_TIMEOUT_MS: '90000' });
+    expect(config.CLIP_MAX_CONCURRENT).toBe(4);
+    expect(config.CLIP_TIMEOUT_MS).toBe(90000);
+    const empty = loadConfig({ ...base, CLIP_MAX_CONCURRENT: '', CLIP_TIMEOUT_MS: '' });
+    expect([empty.CLIP_MAX_CONCURRENT, empty.CLIP_TIMEOUT_MS]).toEqual([2, 60000]);
+    expect(() => loadConfig({ ...base, CLIP_MAX_CONCURRENT: '0' })).toThrowError(/CLIP_MAX_CONCURRENT/);
+    expect(() => loadConfig({ ...base, CLIP_TIMEOUT_MS: 'rápido' })).toThrowError(/CLIP_TIMEOUT_MS/);
+  });
+
+  it('toma VIDEOS_DIR del entorno y trata la vacía como no definida', () => {
+    expect(loadConfig({ ...base, VIDEOS_DIR: '/data/videos' }).VIDEOS_DIR).toBe('/data/videos');
+    expect(loadConfig({ ...base, VIDEOS_DIR: '' }).VIDEOS_DIR).toBe('./videos');
   });
 
   it('rechaza valores numéricos inválidos', () => {

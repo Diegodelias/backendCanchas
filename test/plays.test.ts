@@ -231,4 +231,147 @@ describe('jugadas del jugador', () => {
     await env.db.query(`DELETE FROM users WHERE email = $1`, [ANA]);
     expect(await countPlays()).toBe(0);
   });
+  describe('con los datos de su grabación', () => {
+    async function recordingFor(id: string, opts: { status?: string; clubActive?: boolean } = {}) {
+      await env.db.query(
+        `INSERT INTO clubs (id, name, zone, city, address, active) VALUES ('test-plays-rec', 'Club Demo', 'Zona', 'buenos-aires', 'Calle 1', $1)
+         ON CONFLICT (id) DO UPDATE SET active = EXCLUDED.active`,
+        [opts.clubActive ?? true],
+      );
+      await env.db.query(
+        `INSERT INTO courts (id, club_id, name, sport, price) VALUES ('test-plays-rec-c1', 'test-plays-rec', 'Cancha 1', 'Fútbol 5', 1000)
+         ON CONFLICT (id) DO NOTHING`,
+      );
+      const status = opts.status ?? 'available';
+      await env.db.query(
+        `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds)
+         VALUES ($1, 'test-plays-rec-c1', '2026-03-01T17:30:00-03:00', $2, $3, 60)`,
+        [id, status, status === 'available' ? 'demo-partido.mp4' : null],
+      );
+    }
+
+    it('una jugada de una grabación llega con club, cancha, turno, estado y video, al listar, crear y editar', async () => {
+      await recordingFor('test-play-rec-1');
+      const ana = await loginPlayer(ANA);
+      const created = await create(ana, { matchId: 'test-play-rec-1' });
+      const expected = {
+        id: 'test-play-rec-1',
+        club: { id: 'test-plays-rec', name: 'Club Demo' },
+        court: { id: 'test-plays-rec-c1', name: 'Cancha 1' },
+        date: '2026-03-01',
+        time: '17:30',
+        status: 'available',
+        videoUrl: '/api/videos/demo-partido.mp4',
+      };
+      expect(body(created).play.recording).toMatchObject(expected);
+
+      const list = await call('GET', '/api/plays', ana);
+      expect(body(list).plays[0].recording).toMatchObject(expected);
+
+      const edited = await call('PATCH', `/api/plays/${body(created).play.id}`, ana, { title: 'Otro título' });
+      expect(body(edited).play.recording).toMatchObject(expected);
+    });
+
+    it('una jugada en vivo, con el id de una cámara, se guarda y llega sin grabación', async () => {
+      const ana = await loginPlayer(ANA);
+      const res = await create(ana, { matchId: 'estacion-norte-c1', isLiveMoment: true });
+      expect(res.statusCode).toBe(201);
+      expect(body(res).play.recording).toBeNull();
+    });
+
+    it('una jugada huérfana se conserva y llega con recording null, también si el club se desactiva', async () => {
+      await recordingFor('test-play-rec-2');
+      const ana = await loginPlayer(ANA);
+      await create(ana, { matchId: 'test-play-rec-2' });
+      await create(ana, { matchId: 'match-que-ya-no-existe', title: 'Huérfana' });
+
+      let plays = body(await call('GET', '/api/plays', ana)).plays as { title: string; recording: unknown }[];
+      expect(plays.find((p) => p.title === 'Huérfana')!.recording).toBeNull();
+      expect(plays.find((p) => p.title === 'Gol de chilena')!.recording).not.toBeNull();
+
+      await env.db.query(`UPDATE clubs SET active = false WHERE id = 'test-plays-rec'`);
+      plays = body(await call('GET', '/api/plays', ana)).plays;
+      expect(plays).toHaveLength(2);
+      expect(plays.every((p) => p.recording === null)).toBe(true);
+    });
+
+    it('una grabación en proceso llega con su estado y sin video', async () => {
+      await recordingFor('test-play-rec-3', { status: 'processing' });
+      const ana = await loginPlayer(ANA);
+      const res = await create(ana, { matchId: 'test-play-rec-3' });
+      expect(body(res).play.recording).toMatchObject({ status: 'processing', videoUrl: null });
+    });
+
+    it('varias jugadas de la misma grabación se resuelven juntas', async () => {
+      await recordingFor('test-play-rec-4');
+      const ana = await loginPlayer(ANA);
+      await create(ana, { matchId: 'test-play-rec-4', title: 'Una' });
+      await create(ana, { matchId: 'test-play-rec-4', title: 'Otra' });
+      const plays = body(await call('GET', '/api/plays', ana)).plays as { recording: { id: string } }[];
+      expect(plays.map((p) => p.recording.id)).toEqual(['test-play-rec-4', 'test-play-rec-4']);
+    });
+  });
+  describe('con su fragmento', () => {
+    it('sin indicarlo, el fragmento es de 15 s antes a 5 s después del momento marcado', async () => {
+      const ana = await loginPlayer(ANA);
+      const res = await create(ana, { timestamp: 19 });
+      expect(res.statusCode).toBe(201);
+      expect(body(res).play).toMatchObject({ timestamp: 19, clipStart: 4, clipEnd: 24 });
+    });
+
+    it('el inicio por defecto no baja de 0', async () => {
+      const ana = await loginPlayer(ANA);
+      const res = await create(ana, { timestamp: 6 });
+      expect(body(res).play).toMatchObject({ clipStart: 0, clipEnd: 11 });
+    });
+
+    it('guarda el fragmento que ajustó el jugador y lo devuelve al listar y al editar', async () => {
+      const ana = await loginPlayer(ANA);
+      const created = await create(ana, { timestamp: 30, clipStart: 20, clipEnd: 45 });
+      expect(created.statusCode).toBe(201);
+      expect(body(created).play).toMatchObject({ clipStart: 20, clipEnd: 45 });
+
+      const list = await call('GET', '/api/plays', ana);
+      expect(body(list).plays[0]).toMatchObject({ clipStart: 20, clipEnd: 45 });
+      const edited = await call('PATCH', `/api/plays/${body(created).play.id}`, ana, { title: 'Otro' });
+      expect(body(edited).play).toMatchObject({ clipStart: 20, clipEnd: 45 });
+    });
+
+    it('acepta un fragmento de justo 3 y de justo 120 segundos, y uno que empieza o termina en el momento marcado', async () => {
+      const ana = await loginPlayer(ANA);
+      expect((await create(ana, { timestamp: 30, clipStart: 29, clipEnd: 32 })).statusCode).toBe(201);
+      expect((await create(ana, { timestamp: 100, clipStart: 0, clipEnd: 120 })).statusCode).toBe(201);
+      expect((await create(ana, { timestamp: 30, clipStart: 30, clipEnd: 40 })).statusCode).toBe(201);
+      expect((await create(ana, { timestamp: 30, clipStart: 20, clipEnd: 30 })).statusCode).toBe(201);
+    });
+
+    it.each([
+      ['dura menos de 3 segundos', { clipStart: 29, clipEnd: 31 }, /al menos 3 segundos/],
+      ['dura más de 120 segundos', { clipStart: 0, clipEnd: 121 }, /hasta 120 segundos/],
+      ['el fin es anterior al inicio', { clipStart: 40, clipEnd: 30 }, /posterior al inicio/],
+      ['el fin es igual al inicio', { clipStart: 30, clipEnd: 30 }, /posterior al inicio/],
+      ['el inicio es negativo', { clipStart: -2, clipEnd: 30 }, /no puede ser negativo/],
+      ['no incluye el momento marcado (antes)', { clipStart: 10, clipEnd: 20 }, /incluir el momento marcado/],
+      ['no incluye el momento marcado (después)', { clipStart: 31, clipEnd: 45 }, /incluir el momento marcado/],
+      ['trae solo el inicio', { clipStart: 20 }, /inicio y el fin/],
+      ['trae solo el fin', { clipEnd: 40 }, /inicio y el fin/],
+      ['no son segundos enteros', { clipStart: 20.5, clipEnd: 40 }, /segundos enteros/],
+    ])('rechaza un fragmento que %s, sin guardar la jugada', async (_name, clip, message) => {
+      const ana = await loginPlayer(ANA);
+      const res = await create(ana, { timestamp: 30, ...clip });
+      expect(res.statusCode).toBe(400);
+      expect(body(res).error.code).toBe('validation_error');
+      expect(body(res).error.message).toMatch(message);
+      expect(await countPlays()).toBe(0);
+    });
+
+    it('una jugada en vivo no guarda fragmento, aunque el pedido traiga uno', async () => {
+      const ana = await loginPlayer(ANA);
+      const res = await create(ana, { matchId: 'estacion-norte-c1', isLiveMoment: true, timestamp: 12 });
+      expect(body(res).play).toMatchObject({ clipStart: null, clipEnd: null });
+      const withClip = await create(ana, { matchId: 'estacion-norte-c1', isLiveMoment: true, timestamp: 12, clipStart: 1, clipEnd: 2 });
+      expect(withClip.statusCode).toBe(201);
+      expect(body(withClip).play).toMatchObject({ clipStart: null, clipEnd: null });
+    });
+  });
 });

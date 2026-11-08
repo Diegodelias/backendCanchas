@@ -4,9 +4,12 @@ import type { AppDeps } from '../../app.js';
 import { AppError } from '../../lib/errors.js';
 import { accessEmail } from '../mail/accessEmail.js';
 import { passwordResetEmail } from '../mail/passwordResetEmail.js';
+import { sendWithRetries } from '../mail/retries.js';
 import { isLoginBlocked, pruneOldAttempts, recordFailedLogin } from './attempts.js';
 import {
+  consumeAccessCode,
   consumeLoginToken,
+  createAccessLogin,
   createLoginToken,
   isLinkRequestBlocked,
   pruneOldLinks,
@@ -30,9 +33,20 @@ const confirmBody = z.object({
   token: z.string().min(1, 'Falta el link de acceso.').max(200),
 });
 
+const confirmCodeBody = z.object({
+  email: z.string().trim().min(1).max(254),
+  code: z.string().min(1).max(32),
+});
+
+const INVALID_CODE = () =>
+  new AppError(400, 'invalid_code', 'El código no es correcto o venció. Revisá el último mail o pedí uno nuevo.');
+
+const TOO_MANY_CODE_ATTEMPTS = () =>
+  new AppError(429, 'too_many_code_attempts', 'Hubo demasiados intentos con el código. Pedí un código nuevo.');
+
 /** Mismo texto para jugador existente, mail nuevo y mail de admin: no revela qué cuentas existen. */
 const LINK_REQUESTED_MESSAGE =
-  'Si el mail está bien escrito, te enviamos un link de acceso. Revisá tu bandeja de entrada y el correo no deseado. El link vence en 15 minutos.';
+  'Si el mail está bien escrito, te enviamos un código y un link de acceso. Revisá tu bandeja de entrada y el correo no deseado. Vencen en 15 minutos.';
 
 const resetPasswordBody = z.object({
   token: z.string().min(1, 'Falta el link de recuperación.').max(200),
@@ -145,14 +159,11 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
       [email],
     );
     if (existing?.role !== 'club_admin') {
-      const token = await createLoginToken(db, 'access', email, at);
+      const { token, code } = await createAccessLogin(db, email, at);
       const link = `${config.PUBLIC_APP_URL}/acceso?token=${encodeURIComponent(token)}`;
       // En segundo plano: esperar el envío haría que «se envió» tardara más que «no se envió nada».
-      void mailer.send(accessEmail(email, link)).catch((err: unknown) => {
-        // Solo el tipo de error: ni el link ni el destinatario van al log.
-        const code = (err as { code?: string }).code;
-        app.log.error({ errorName: (err as Error).name, code }, 'No se pudo enviar el mail de acceso');
-      });
+      // Se reintenta hasta 3 veces; el log solo lleva el tipo de error: ni el link, ni el código ni el destinatario.
+      sendWithRetries(mailer, accessEmail(email, link, code), app.log, 'No se pudo enviar el mail de acceso', deps.mailRetryDelaysMs);
     }
     return reply.status(202).send({ message: LINK_REQUESTED_MESSAGE });
   });
@@ -180,6 +191,32 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
     return { user: toSessionUser(user) };
   });
 
+  // POST /api/auth/player/confirm-code { email, code } -> 200 { user } con la cookie de sesión; 400 si no sirve.
+  app.post('/auth/player/confirm-code', async (req, reply) => {
+    const { email: typed, code: typedCode } = confirmCodeBody.parse(req.body);
+    const email = typed.toLowerCase();
+    const code = typedCode.replace(/\s+/g, '');
+    const at = now();
+
+    // Un código con formato inválido tampoco dice nada del mail: mismo error que uno equivocado.
+    if (!/^\d{6}$/.test(code)) throw INVALID_CODE();
+    const consumed = await consumeAccessCode(db, email, code, at);
+    if (!consumed.ok) throw consumed.reason === 'too_many' ? TOO_MANY_CODE_ATTEMPTS() : INVALID_CODE();
+
+    await db.query(`INSERT INTO users (email, role) VALUES ($1, 'player') ON CONFLICT DO NOTHING`, [consumed.email]);
+    const [user] = await db.query<UserRow>(
+      `SELECT id, email, name, role, club_id, password_hash FROM users WHERE lower(email) = lower($1)`,
+      [consumed.email],
+    );
+    // El mail se volvió de un admin después de pedir el código: no se abre sesión de jugador.
+    if (!user || user.role !== 'player') throw INVALID_CODE();
+
+    await deleteSession(db, req.cookies[SESSION_COOKIE]);
+    const sessionToken = await createSession(db, user.id, user.role, at);
+    reply.setCookie(SESSION_COOKIE, sessionToken, cookieOptions);
+    return { user: toSessionUser(user) };
+  });
+
   // POST /api/auth/admin/request-reset -> 202 con el mismo cuerpo para cualquier mail válido.
   app.post('/auth/admin/request-reset', async (req, reply) => {
     const { email: typed } = requestLinkBody.parse(req.body);
@@ -200,10 +237,7 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
       const token = await createLoginToken(db, 'password_reset', email, at);
       const link = `${config.PUBLIC_APP_URL}/recuperar?token=${encodeURIComponent(token)}`;
       // En segundo plano, igual que el acceso del jugador: el tiempo de respuesta no distingue los casos.
-      void mailer.send(passwordResetEmail(email, link)).catch((err: unknown) => {
-        const code = (err as { code?: string }).code;
-        app.log.error({ errorName: (err as Error).name, code }, 'No se pudo enviar el mail de recuperación');
-      });
+      sendWithRetries(mailer, passwordResetEmail(email, link), app.log, 'No se pudo enviar el mail de recuperación', deps.mailRetryDelaysMs);
     }
     return reply.status(202).send({ message: RESET_REQUESTED_MESSAGE });
   });

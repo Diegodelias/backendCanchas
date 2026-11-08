@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import type { Database } from '../../db/client.js';
 import { hashToken } from './sessions.js';
 
@@ -72,6 +72,86 @@ export async function createLoginToken(
     [purpose, email, hashToken(token), now, new Date(now.getTime() + LINK_TTL_MS[purpose])],
   );
   return token;
+}
+
+/** Intentos fallidos de código permitidos por pedido; al llegar a este número el código deja de aceptarse. */
+export const MAX_CODE_ATTEMPTS = 5;
+
+/** Hash del código con el mail (en minúsculas) como sal: el mismo código en dos mails da hashes distintos. */
+export function hashCode(email: string, code: string): string {
+  return createHash('sha256').update(`${email.toLowerCase()}:${code}`).digest('hex');
+}
+
+/** Código de 6 dígitos, con ceros a la izquierda. */
+export function generateCode(): string {
+  return randomInt(0, 1_000_000).toString().padStart(6, '0');
+}
+
+/**
+ * Crea un pedido de acceso de jugador: el link y el código de 6 dígitos viven en la misma fila, así que
+ * usar uno gasta el otro. Devuelve el identificador del link y el código (en la base quedan solo los hashes).
+ */
+export async function createAccessLogin(
+  db: Database,
+  email: string,
+  now: Date,
+): Promise<{ token: string; code: string }> {
+  const token = randomBytes(32).toString('base64url');
+  const code = generateCode();
+  await db.query(
+    `INSERT INTO login_tokens (purpose, email, token_hash, code_hash, created_at, expires_at)
+     VALUES ('access', $1, $2, $3, $4, $5)`,
+    [email, hashToken(token), hashCode(email, code), now, new Date(now.getTime() + LINK_TTL_MS.access)],
+  );
+  return { token, code };
+}
+
+export type CodeResult = { ok: true; email: string } | { ok: false; reason: 'invalid' | 'too_many' };
+
+/**
+ * Ingresa con el código: consume (en una sola sentencia) la fila de acceso vigente de ese mail cuyo código
+ * coincide. Si ninguna coincide, suma un intento fallido a TODAS las filas vigentes del mail (así el total de
+ * intentos no se multiplica pidiendo códigos nuevos) y avisa si ya no queda ninguna que acepte código.
+ */
+export async function consumeAccessCode(
+  db: Database,
+  email: string,
+  code: string,
+  now: Date,
+): Promise<CodeResult> {
+  const mail = email.toLowerCase();
+  const [consumed] = await db.query<{ email: string }>(
+    `UPDATE login_tokens SET used_at = $3
+      WHERE id = (
+        SELECT id FROM login_tokens
+         WHERE purpose = 'access' AND lower(email) = $1 AND code_hash = $2
+           AND used_at IS NULL AND expires_at > $3 AND code_attempts < $4
+         ORDER BY created_at DESC LIMIT 1)
+        AND used_at IS NULL
+      RETURNING email`,
+    [mail, hashCode(mail, code), now, MAX_CODE_ATTEMPTS],
+  );
+  if (consumed) return { ok: true, email: consumed.email };
+
+  await db.query(
+    `UPDATE login_tokens SET code_attempts = code_attempts + 1
+      WHERE purpose = 'access' AND lower(email) = $1 AND code_hash IS NOT NULL
+        AND used_at IS NULL AND expires_at > $2 AND code_attempts < $3`,
+    [mail, now, MAX_CODE_ATTEMPTS],
+  );
+  const [open] = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM login_tokens
+      WHERE purpose = 'access' AND lower(email) = $1 AND code_hash IS NOT NULL
+        AND used_at IS NULL AND expires_at > $2 AND code_attempts < $3`,
+    [mail, now, MAX_CODE_ATTEMPTS],
+  );
+  const [exhausted] = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM login_tokens
+      WHERE purpose = 'access' AND lower(email) = $1 AND code_hash IS NOT NULL
+        AND used_at IS NULL AND expires_at > $2`,
+    [mail, now],
+  );
+  return { ok: false, reason: (open?.n ?? 0) === 0 && (exhausted?.n ?? 0) > 0 ? 'too_many' : 'invalid' };
 }
 
 /**

@@ -4,6 +4,7 @@ import type { AppDeps } from '../../app.js';
 import { forbidden, notFound, unauthorized } from '../../lib/errors.js';
 import { resolveSession, SESSION_COOKIE } from '../auth/sessions.js';
 import { listClubBookings } from '../bookings/bookings.js';
+import { listClubRecordings } from '../recordings/recordings.js';
 import { getSchedule, replaceSchedule, requireCourt, scheduleBody } from '../bookings/schedules.js';
 import { CITY_IDS } from './clubs.js';
 import {
@@ -180,6 +181,13 @@ export async function clubsRoutes(app: FastifyInstance, deps: AppDeps) {
     const clubId = await requireClubAdmin(req);
     reply.header('Cache-Control', 'no-store');
     return { bookings: await listClubBookings(db, clubId) };
+  });
+
+  // GET /api/club/recordings -> { recordings } de las canchas del club (cualquier estado), solo lectura.
+  app.get('/club/recordings', async (req, reply) => {
+    const clubId = await requireClubAdmin(req);
+    reply.header('Cache-Control', 'no-store');
+    return { recordings: await listClubRecordings(db, clubId) };
   });
 
   // GET /api/club/courts/:courtId/schedule -> { days } del horario semanal; 404 si la cancha no es del club o está borrada.

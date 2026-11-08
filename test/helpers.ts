@@ -146,10 +146,25 @@ export class FakeMailer implements Mailer {
   readonly sent: MailMessage[] = [];
   /** Si no es null, `send` falla con este error (simula un SMTP caído). */
   failWith: Error | null = null;
+  /** Cuántas veces se llamó a `send` (con éxito o no). */
+  attempts = 0;
+  /** Si es mayor que 0, las próximas `failTimes` llamadas fallan y después se entrega (falla pasajera). */
+  failTimes = 0;
 
   async send(message: MailMessage): Promise<void> {
+    this.attempts++;
+    if (this.failTimes > 0) {
+      this.failTimes--;
+      throw Object.assign(new Error('SMTP caído por un momento'), { code: 'ECONNRESET' });
+    }
     if (this.failWith) throw this.failWith;
     this.sent.push(message);
+  }
+
+  /** Código de 6 dígitos del último mail de acceso enviado a ese destinatario, o null. */
+  lastCodeTo(email: string): string | null {
+    const mail = [...this.sent].reverse().find((m) => m.to.toLowerCase() === email.toLowerCase());
+    return mail?.text.match(/Tu código: (\d{6})/)?.[1] ?? null;
   }
 
   /** Link de acceso del último mail enviado a ese destinatario, o null. */
@@ -162,6 +177,8 @@ export class FakeMailer implements Mailer {
 export interface DbTestEnv {
   app: FastifyInstance;
   db: Database;
+  /** Lanzador de ffmpeg de la app: el falso, salvo que se inyecte otro. */
+  launcher: FfmpegLauncher;
   clock: TestClock;
   mailer: FakeMailer;
   /** Vacía las tablas de auth (se llama antes de cada caso). */
@@ -173,6 +190,7 @@ export interface DbTestEnv {
 export async function createDbTestEnv(
   overrides: Record<string, string> = {},
   logStream?: { write(message: string): void },
+  extra: { launcher?: FfmpegLauncher } = {},
 ): Promise<DbTestEnv> {
   const url = requireTestDatabaseUrl();
   await runMigrations(url);
@@ -180,10 +198,12 @@ export async function createDbTestEnv(
   const clock = new TestClock();
   const mailer = new FakeMailer();
   const config = testConfig({ DATABASE_URL: url, ...overrides });
-  const app = await buildApp({ config, db, launcher: new FakeLauncher(), now: clock.now, mailer, logStream });
+  const launcher = extra.launcher ?? new FakeLauncher();
+  const app = await buildApp({ config, db, launcher, now: clock.now, mailer, mailRetryDelaysMs: [5, 5], logStream });
   return {
     app,
     db,
+    launcher,
     clock,
     mailer,
     reset: async () => {
@@ -191,6 +211,8 @@ export async function createDbTestEnv(
       await deleteTestClubs(db);
       mailer.sent.length = 0;
       mailer.failWith = null;
+      mailer.attempts = 0;
+      mailer.failTimes = 0;
       clock.current = new TestClock().current;
     },
     close: async () => {
