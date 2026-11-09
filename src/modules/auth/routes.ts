@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppDeps } from '../../app.js';
 import { AppError } from '../../lib/errors.js';
 import { accessEmail } from '../mail/accessEmail.js';
+import { getSiteName } from '../site/settings.js';
 import { passwordResetEmail } from '../mail/passwordResetEmail.js';
 import { sendWithRetries } from '../mail/retries.js';
 import { isLoginBlocked, pruneOldAttempts, recordFailedLogin } from './attempts.js';
@@ -163,7 +164,8 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
       const link = `${config.PUBLIC_APP_URL}/acceso?token=${encodeURIComponent(token)}`;
       // En segundo plano: esperar el envío haría que «se envió» tardara más que «no se envió nada».
       // Se reintenta hasta 3 veces; el log solo lleva el tipo de error: ni el link, ni el código ni el destinatario.
-      sendWithRetries(mailer, accessEmail(email, link, code), app.log, 'No se pudo enviar el mail de acceso', deps.mailRetryDelaysMs);
+      const siteName = await getSiteName(db);
+      sendWithRetries(mailer, accessEmail(email, link, code, siteName), app.log, 'No se pudo enviar el mail de acceso', deps.mailRetryDelaysMs);
     }
     return reply.status(202).send({ message: LINK_REQUESTED_MESSAGE });
   });
@@ -237,7 +239,8 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
       const token = await createLoginToken(db, 'password_reset', email, at);
       const link = `${config.PUBLIC_APP_URL}/recuperar?token=${encodeURIComponent(token)}`;
       // En segundo plano, igual que el acceso del jugador: el tiempo de respuesta no distingue los casos.
-      sendWithRetries(mailer, passwordResetEmail(email, link), app.log, 'No se pudo enviar el mail de recuperación', deps.mailRetryDelaysMs);
+      const siteName = await getSiteName(db);
+      sendWithRetries(mailer, passwordResetEmail(email, link, siteName), app.log, 'No se pudo enviar el mail de recuperación', deps.mailRetryDelaysMs);
     }
     return reply.status(202).send({ message: RESET_REQUESTED_MESSAGE });
   });

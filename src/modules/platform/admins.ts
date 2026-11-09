@@ -5,6 +5,7 @@ import type { Database } from '../../db/client.js';
 import { AppError, notFound } from '../../lib/errors.js';
 import { isLinkRequestBlocked, pruneOldLinks, recordLinkRequest, replaceInviteToken } from '../auth/links.js';
 import { inviteEmail } from '../mail/inviteEmail.js';
+import { getSiteName } from '../site/settings.js';
 import type { Mailer } from '../mail/mailer.js';
 import { requireSuperadmin } from './guard.js';
 
@@ -94,7 +95,7 @@ async function sendInvite(ctx: InviteContext, admin: { email: string; name: stri
   const token = await replaceInviteToken(ctx.db, admin.email, now);
   const link = `${ctx.publicAppUrl}/invitacion?token=${encodeURIComponent(token)}`;
   try {
-    await ctx.mailer.send(inviteEmail(admin.email, link, clubName, admin.name));
+    await ctx.mailer.send(inviteEmail(admin.email, link, clubName, admin.name, await getSiteName(ctx.db)));
     return true;
   } catch (err) {
     const code = (err as { code?: string }).code;

@@ -6,6 +6,8 @@ export interface MailMessage {
   subject: string;
   text: string;
   html: string;
+  /** Nombre visible del remitente (el nombre del sitio). Sin él se usa el de `MAIL_FROM`. La dirección sale siempre de `MAIL_FROM`. */
+  fromName?: string;
 }
 
 /** Cómo el backend envía mails. Cambiar de implementación es cambiar la configuración. */
@@ -38,10 +40,17 @@ export class SmtpMailer implements Mailer {
     private readonly log?: MailLogger,
   ) {}
 
+  /** El remitente: la dirección de `MAIL_FROM` con el nombre pedido; sin nombre, `MAIL_FROM` tal cual. */
+  private sender(fromName?: string): string | { name: string; address: string } {
+    if (!fromName) return this.from;
+    const address = this.from.match(/<([^>]+)>/)?.[1] ?? this.from;
+    return { name: fromName, address };
+  }
+
   async send(message: MailMessage): Promise<void> {
     try {
       const info = (await this.transport.sendMail({
-        from: this.from,
+        from: this.sender(message.fromName),
         to: message.to,
         subject: message.subject,
         text: message.text,

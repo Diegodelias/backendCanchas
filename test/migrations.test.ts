@@ -36,6 +36,7 @@ describe('migraciones', () => {
       '1763200000000_grabaciones',
       '1763300000000_fragmento-de-jugada',
       '1763400000000_codigo-de-acceso',
+      '1763500000000_nombre-del-sitio',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -53,6 +54,7 @@ describe('migraciones', () => {
       'plays',
       'recordings',
       'sessions',
+      'site_settings',
       'users',
     ]);
   });
@@ -357,7 +359,11 @@ describe('migraciones', () => {
       rmSync(partial, { recursive: true, force: true });
     }
 
-    expect(await runMigrations(url)).toEqual(['1763300000000_fragmento-de-jugada', '1763400000000_codigo-de-acceso']);
+    expect(await runMigrations(url)).toEqual([
+      '1763300000000_fragmento-de-jugada',
+      '1763400000000_codigo-de-acceso',
+      '1763500000000_nombre-del-sitio',
+    ]);
     const clips = await db.query<{ id: string; clip_start_seconds: number | null; clip_end_seconds: number | null }>(
       `SELECT id, clip_start_seconds, clip_end_seconds FROM plays ORDER BY id`,
     );
@@ -404,7 +410,7 @@ describe('migraciones', () => {
       rmSync(partial, { recursive: true, force: true });
     }
 
-    expect(await runMigrations(url)).toEqual(['1763400000000_codigo-de-acceso']);
+    expect(await runMigrations(url)).toEqual(['1763400000000_codigo-de-acceso', '1763500000000_nombre-del-sitio']);
     const [old] = await db.query<{ code_hash: string | null; code_attempts: number }>(
       `SELECT code_hash, code_attempts FROM login_tokens WHERE token_hash = 'hash-viejo'`,
     );
@@ -417,13 +423,13 @@ describe('migraciones', () => {
       ),
     ).rejects.toThrow(/login_tokens_code_attempts_check/);
 
-    // Bajar: las columnas desaparecen y los links siguen.
+    // Bajar las dos últimas (el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
     const { runner } = await import('node-pg-migrate');
     await runner({
       databaseUrl: url,
       dir: MIGRATIONS_DIR,
       direction: 'down',
-      count: 1,
+      count: 2,
       migrationsTable: 'pgmigrations',
       checkOrder: true,
       singleTransaction: true,
@@ -435,6 +441,9 @@ describe('migraciones', () => {
     expect(cols.map((c) => c.column_name)).not.toContain('code_hash');
     expect(cols.map((c) => c.column_name)).not.toContain('code_attempts');
     expect((await db.query(`SELECT 1 FROM login_tokens WHERE token_hash = 'hash-viejo'`)).length).toBe(1);
+    // La bajada de la configuración del sitio borra su tabla.
+    expect(await db.query(`SELECT 1 FROM information_schema.tables WHERE table_name = 'site_settings'`)).toHaveLength(0);
     await runMigrations(url);
+    expect(await db.query(`SELECT name FROM site_settings`)).toEqual([{ name: 'Canchas3' }]);
   });
 });

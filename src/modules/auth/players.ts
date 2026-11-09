@@ -4,6 +4,7 @@ import type { Database } from '../../db/client.js';
 import { AppError } from '../../lib/errors.js';
 import { accessEmail } from '../mail/accessEmail.js';
 import type { Mailer } from '../mail/mailer.js';
+import { getSiteName } from '../site/settings.js';
 import { createLoginToken, isLinkRequestBlocked, PLAYER_HANDOVER_TTL_MS, pruneOldLinks, recordLinkRequest } from './links.js';
 
 /** Cuerpo de «crear jugador», igual para el panel del club y el de la plataforma. */
@@ -88,7 +89,7 @@ export async function createPlayer(ctx: CreatePlayerContext, input: CreatePlayer
   let emailSent: boolean | null = null;
   if (input.sendEmail) {
     try {
-      await ctx.mailer.send(accessEmail(row.email, link));
+      await ctx.mailer.send(accessEmail(row.email, link, undefined, await getSiteName(db)));
       emailSent = true;
     } catch (err) {
       const code = (err as { code?: string }).code;

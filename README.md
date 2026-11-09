@@ -143,7 +143,7 @@ Que el servidor acepte el mail no garantiza que llegue a la bandeja principal. C
 - **DMARC:** registro TXT `_dmarc` con una política (empezá con `p=none` y mirá los reportes).
 - Usá el SMTP de un proveedor de envío (no una casilla personal) y probá con un mail real a Gmail y Outlook antes de abrir el sitio a jugadores.
 
-Variables: `PUBLIC_APP_URL` (dirección del frontend; por defecto `http://localhost:3000`), `SMTP_URL` y `MAIL_FROM` (por defecto `Canchas3 <no-reply@canchas3.example>`). **En producción `PUBLIC_APP_URL` y `SMTP_URL` son obligatorias**: sin ellas la API no arranca, para no dejar en el log los links de acceso de los jugadores. Guardá `SMTP_URL` como secreto de la plataforma.
+Variables: `PUBLIC_APP_URL` (dirección del frontend; por defecto `http://localhost:3000`), `SMTP_URL` y `MAIL_FROM` (por defecto `Canchas3 <no-reply@canchas3.example>`; de ahí sale la dirección del remitente y el nombre visible lo pone el [nombre del sitio](#nombre-del-sitio)). **En producción `PUBLIC_APP_URL` y `SMTP_URL` son obligatorias**: sin ellas la API no arranca, para no dejar en el log los links de acceso de los jugadores. Guardá `SMTP_URL` como secreto de la plataforma.
 
 ## Jugadas
 
@@ -243,6 +243,7 @@ Todas las rutas de `/api/platform/...` son **solo para un superadmin con sesión
 | `POST /api/platform/clubs/:clubId/admins` `{ email, name }` | `201 { admin, emailSent }`; `409 email_is_admin` / `email_is_player` / `email_other_club`; `429 too_many_requests`; `400 validation_error` |
 | `POST /api/platform/clubs/:clubId/admins/:adminId/invitation` | `200 { admin, emailSent }`; `409 admin_not_invited` (solo se reenvía a un Invitado); `429`; `404` |
 | `DELETE /api/platform/clubs/:clubId/admins/:adminId` | `204` (baja lógica); `404` (no existe, es de otro club o ya estaba de baja) |
+| `PUT /api/platform/site` `{ name }` | `200 { name }`: cambia el nombre del sitio (se guarda sin espacios al borde); `400 validation_error` si está vacío, tiene más de 40 caracteres o un salto de línea |
 
 ### Admins de club por invitación
 
@@ -254,6 +255,19 @@ El superadmin no conoce ni elige la contraseña de nadie ni cambia un mail:
 4. **Dar de baja** marca `deactivated_at`, cierra todas sus sesiones y borra sus links sin usar. La cuenta se conserva: no ingresa ni recibe la recuperación de contraseña. Se la puede **reinvitar al mismo club** (vuelve sin contraseña); un mail de otro club, de un admin activo/invitado, de un superadmin o de un jugador se rechaza.
 
 El estado de un admin no se guarda: sale de `deactivated_at` y `password_hash`.
+
+### Nombre del sitio
+
+El nombre que se muestra en el logo, la interfaz y los mails es una configuración que edita el superadmin desde su panel (`PUT /api/platform/site`), guardada en la tabla `site_settings` (una sola fila). Sin tocarla vale **«Canchas3»**.
+
+| Método y ruta | Quién | Respuestas |
+|---|---|---|
+| `GET /api/site` | Cualquiera, sin sesión | `200 { name }`; sin copia guardada, para que el cambio se vea al recargar |
+| `PUT /api/platform/site` `{ name }` | Superadmin | `200 { name }`; `400 validation_error`; `401` / `403` |
+
+- **Reglas del nombre:** entre 1 y 40 caracteres, sin espacios al principio ni al final y sin saltos de línea. Las repite una restricción de la base.
+- **Mails:** el asunto, el texto y el **nombre visible del remitente** de los mails de acceso, invitación y recuperación usan el nombre vigente al momento de enviar. La **dirección** del remitente sigue saliendo de `MAIL_FROM`: su nombre visible (`Canchas3 <...>`) solo se usa si un mensaje no trae nombre. La autenticación del dominio (SPF y DKIM) no cambia.
+- **Qué no cambia:** los metadatos `og:` del HTML estático del frontend, la imagen del logo (no hay) y el copy de marketing de la landing.
 
 ## Grabaciones
 

@@ -8,6 +8,7 @@ import { bookingsRoutes } from './modules/bookings/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { clubsRoutes } from './modules/clubs/routes.js';
 import { platformRoutes } from './modules/platform/routes.js';
+import { siteRoutes } from './modules/site/routes.js';
 import { createMailer, describeMailDelivery, type Mailer } from './modules/mail/mailer.js';
 import { recordingsRoutes } from './modules/recordings/routes.js';
 import { playsRoutes } from './modules/plays/routes.js';
@@ -120,6 +121,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await api.register(bookingsRoutes, deps);
       await api.register(recordingsRoutes, deps);
       await api.register(platformRoutes, deps);
+      await api.register(siteRoutes, deps);
     },
     { prefix: '/api' },
   );

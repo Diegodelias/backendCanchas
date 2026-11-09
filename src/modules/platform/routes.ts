@@ -4,6 +4,7 @@ import { platformAdminsRoutes } from './admins.js';
 import { platformClubsRoutes } from './clubs.js';
 import { platformCourtsRoutes } from './courts.js';
 import { platformPlayersRoutes } from './players.js';
+import { platformSiteRoutes } from './site.js';
 
 /** Rutas de la plataforma (`/api/platform/...`): solo las atiende un superadmin con sesión válida. */
 export async function platformRoutes(app: FastifyInstance, deps: AppDeps) {
@@ -11,4 +12,5 @@ export async function platformRoutes(app: FastifyInstance, deps: AppDeps) {
   await platformCourtsRoutes(app, deps);
   await platformAdminsRoutes(app, deps);
   await platformPlayersRoutes(app, deps);
+  await platformSiteRoutes(app, deps);
 }

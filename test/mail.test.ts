@@ -1,10 +1,11 @@
-import nodemailer from 'nodemailer';
+import nodemailer, { type Transporter } from 'nodemailer';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createFakeDatabase, FakeMailer, testConfig } from './helpers.js';
 import { accessEmail, ACCESS_EMAIL_SUBJECT } from '../src/modules/mail/accessEmail.js';
 import { inviteEmail, inviteEmailSubject } from '../src/modules/mail/inviteEmail.js';
+import { PASSWORD_RESET_EMAIL_SUBJECT, passwordResetEmail } from '../src/modules/mail/passwordResetEmail.js';
 import { ConsoleMailer, createMailer, describeMailDelivery, SmtpMailer } from '../src/modules/mail/mailer.js';
 
 const LINK = 'http://localhost:3000/acceso?token=abc123';
@@ -134,6 +135,94 @@ describe('ConsoleMailer', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]!.msg).toContain(LINK);
     expect(lines[0]!.obj).toMatchObject({ to: 'ana@mail.example', subject: 'Tu acceso a Canchas3' });
+  });
+});
+
+describe('los mails usan el nombre del sitio', () => {
+  const NAME = 'Club Central';
+  const INVITE = 'http://localhost:3000/invitacion?token=abc123';
+  const RESET = 'http://localhost:3000/recuperar?token=abc123';
+  const variants = {
+    'acceso con código': () => accessEmail('ana@mail.example', LINK, '048213', NAME),
+    'acceso sin código': () => accessEmail('ana@mail.example', LINK, undefined, NAME),
+    invitación: () => inviteEmail('ana@mail.example', INVITE, 'Norte', 'Ana', NAME),
+    recuperación: () => passwordResetEmail('ana@mail.example', RESET, NAME),
+  };
+
+  it('el asunto lleva el nombre', () => {
+    expect(accessEmail('a@b.example', LINK, '048213', NAME).subject).toBe('Tu acceso a Club Central');
+    expect(inviteEmail('a@b.example', INVITE, 'Norte', null, NAME).subject).toBe('Te invitaron a administrar Norte en Club Central');
+    expect(passwordResetEmail('a@b.example', RESET, NAME).subject).toBe('Restablecé tu contraseña de Club Central');
+  });
+
+  for (const [label, build] of Object.entries(variants)) {
+    it(`${label}: el texto y el HTML nombran al sitio, no a Canchas3, y el remitente lleva el nombre`, () => {
+      const mail = build();
+      expect(mail.text).toContain(NAME);
+      expect(mail.html).toContain(NAME);
+      expect(mail.text).not.toContain('Canchas3');
+      expect(mail.html).not.toContain('Canchas3');
+      expect(mail.subject).not.toContain('Canchas3');
+      expect(mail.fromName).toBe(NAME);
+    });
+  }
+
+  it('sin nombre usa «Canchas3» y los asuntos de siempre', () => {
+    expect(accessEmail('a@b.example', LINK, '048213').subject).toBe(ACCESS_EMAIL_SUBJECT);
+    expect(ACCESS_EMAIL_SUBJECT).toBe('Tu acceso a Canchas3');
+    expect(PASSWORD_RESET_EMAIL_SUBJECT).toBe('Restablecé tu contraseña de Canchas3');
+    expect(inviteEmailSubject('Otro Club')).toBe('Te invitaron a administrar Otro Club en Canchas3');
+    for (const mail of [
+      accessEmail('a@b.example', LINK, '048213'),
+      accessEmail('a@b.example', LINK),
+      inviteEmail('a@b.example', INVITE, 'Norte', null),
+      passwordResetEmail('a@b.example', RESET),
+    ]) {
+      expect(mail.text).toContain('Canchas3');
+      expect(mail.fromName).toBe('Canchas3');
+    }
+  });
+
+  it('un nombre con `<` y `&` se escapa en el HTML y no forma etiquetas', () => {
+    const risky = '<b>Club</b> & Co';
+    for (const mail of [
+      accessEmail('a@b.example', LINK, '048213', risky),
+      accessEmail('a@b.example', LINK, undefined, risky),
+      inviteEmail('a@b.example', INVITE, 'Norte', null, risky),
+      passwordResetEmail('a@b.example', RESET, risky),
+    ]) {
+      expect(mail.html).not.toContain('<b>Club</b>');
+      expect(mail.html).toContain('&lt;b&gt;Club&lt;/b&gt; &amp; Co');
+      expect(mail.text).toContain(risky);
+    }
+  });
+});
+
+describe('SmtpMailer: nombre del remitente', () => {
+  const sendWith = async (mailFrom: string, fromName?: string) => {
+    const calls: { from: unknown }[] = [];
+    const transport = { sendMail: async (options: { from: unknown }) => (calls.push(options), { accepted: ['x'], rejected: [], response: '250 ok' }) };
+    const mailer = new SmtpMailer(transport as unknown as Transporter, mailFrom);
+    await mailer.send({ to: 'a@b.example', subject: 's', text: 't', html: 'h', ...(fromName ? { fromName } : {}) });
+    return calls[0]!.from;
+  };
+
+  it('con nombre, toma la dirección de MAIL_FROM y pone el nombre del sitio', async () => {
+    expect(await sendWith('Canchas3 <no-reply@canchas3.example>', 'Club Central')).toEqual({
+      name: 'Club Central',
+      address: 'no-reply@canchas3.example',
+    });
+  });
+
+  it('si MAIL_FROM es solo una dirección, la usa tal cual con el nombre', async () => {
+    expect(await sendWith('no-reply@canchas3.example', 'Club Central')).toEqual({
+      name: 'Club Central',
+      address: 'no-reply@canchas3.example',
+    });
+  });
+
+  it('sin nombre, usa MAIL_FROM como está', async () => {
+    expect(await sendWith('Canchas3 <no-reply@canchas3.example>')).toBe('Canchas3 <no-reply@canchas3.example>');
   });
 });
 

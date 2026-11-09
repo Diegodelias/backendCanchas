@@ -209,6 +209,8 @@ export async function createDbTestEnv(
     reset: async () => {
       await truncateAuthTables(db);
       await deleteTestClubs(db);
+      // El nombre del sitio no se vacía con las demás tablas: vuelve al valor por defecto.
+      await db.query(`UPDATE site_settings SET name = 'Canchas3'`);
       mailer.sent.length = 0;
       mailer.failWith = null;
       mailer.attempts = 0;
