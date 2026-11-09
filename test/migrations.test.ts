@@ -38,26 +38,32 @@ describe('migraciones', () => {
       '1763400000000_codigo-de-acceso',
       '1763500000000_nombre-del-sitio',
       '1763600000000_color-del-logo',
+      '1763700000000_cupo-de-jugadas',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name`,
     );
-    expect(tables.map((t) => t.table_name)).toEqual([
-      'bookings',
-      'clubs',
-      'court_schedules',
-      'courts',
-      'link_requests',
-      'login_attempts',
-      'login_tokens',
-      'pgmigrations',
-      'plays',
-      'recordings',
-      'sessions',
-      'site_settings',
-      'users',
-    ]);
+    // Se compara sin depender del orden de la base (el orden de «play_settings» y «plays» cambia con la collation).
+    expect(tables.map((t) => t.table_name).sort()).toEqual(
+      [
+        'bookings',
+        'clubs',
+        'court_schedules',
+        'courts',
+        'link_requests',
+        'login_attempts',
+        'login_tokens',
+        'pgmigrations',
+        'play_payments',
+        'play_settings',
+        'plays',
+        'recordings',
+        'sessions',
+        'site_settings',
+        'users',
+      ].sort(),
+    );
   });
 
   it('el check impide un admin de club sin club', async () => {
@@ -365,6 +371,7 @@ describe('migraciones', () => {
       '1763400000000_codigo-de-acceso',
       '1763500000000_nombre-del-sitio',
       '1763600000000_color-del-logo',
+      '1763700000000_cupo-de-jugadas',
     ]);
     const clips = await db.query<{ id: string; clip_start_seconds: number | null; clip_end_seconds: number | null }>(
       `SELECT id, clip_start_seconds, clip_end_seconds FROM plays ORDER BY id`,
@@ -416,6 +423,7 @@ describe('migraciones', () => {
       '1763400000000_codigo-de-acceso',
       '1763500000000_nombre-del-sitio',
       '1763600000000_color-del-logo',
+      '1763700000000_cupo-de-jugadas',
     ]);
     const [old] = await db.query<{ code_hash: string | null; code_attempts: number }>(
       `SELECT code_hash, code_attempts FROM login_tokens WHERE token_hash = 'hash-viejo'`,
@@ -429,13 +437,13 @@ describe('migraciones', () => {
       ),
     ).rejects.toThrow(/login_tokens_code_attempts_check/);
 
-    // Bajar las tres últimas (el color del logo, el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
+    // Bajar las cuatro últimas (el cupo de jugadas, el color del logo, el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
     const { runner } = await import('node-pg-migrate');
     await runner({
       databaseUrl: url,
       dir: MIGRATIONS_DIR,
       direction: 'down',
-      count: 3,
+      count: 4,
       migrationsTable: 'pgmigrations',
       checkOrder: true,
       singleTransaction: true,
@@ -451,5 +459,58 @@ describe('migraciones', () => {
     expect(await db.query(`SELECT 1 FROM information_schema.tables WHERE table_name = 'site_settings'`)).toHaveLength(0);
     await runMigrations(url);
     expect(await db.query(`SELECT name FROM site_settings`)).toEqual([{ name: 'Canchas3' }]);
+  });
+
+  it('el cupo de jugadas arranca en 200 con un paquete de 5 a $2.000, y la base rechaza valores inválidos', async () => {
+    // Valores iniciales y una sola fila de configuración.
+    expect(await db.query(`SELECT free_quota, pack_plays, pack_price FROM play_settings`)).toEqual([
+      { free_quota: 200, pack_plays: 5, pack_price: 2000 },
+    ]);
+    await expect(db.query(`INSERT INTO play_settings (id) VALUES (false)`)).rejects.toThrow(/play_settings_single_row/);
+    await expect(db.query(`INSERT INTO play_settings (id) VALUES (true)`)).rejects.toThrow(/play_settings_pkey/);
+
+    // Rangos: el cupo de 0 a 10 000, el paquete de 1 a 1 000 jugadas y el precio de 1 a 1 000 000 pesos.
+    const set = (column: string, value: number) => db.query(`UPDATE play_settings SET ${column} = ${value}`);
+    await set('free_quota', 0); // válido: cierra el guardado gratis
+    await set('free_quota', 10000);
+    await set('pack_plays', 1000);
+    await set('pack_price', 1000000);
+    await expect(set('free_quota', -1)).rejects.toThrow(/play_settings_free_quota_check/);
+    await expect(set('free_quota', 10001)).rejects.toThrow(/play_settings_free_quota_check/);
+    await expect(set('pack_plays', 0)).rejects.toThrow(/play_settings_pack_plays_check/);
+    await expect(set('pack_plays', 1001)).rejects.toThrow(/play_settings_pack_plays_check/);
+    await expect(set('pack_price', 0)).rejects.toThrow(/play_settings_pack_price_check/);
+    await expect(set('pack_price', 1000001)).rejects.toThrow(/play_settings_pack_price_check/);
+    await db.query(`UPDATE play_settings SET free_quota = 200, pack_plays = 10, pack_price = 2000`);
+
+    // Jugadas extra: empiezan en 0 y no pueden ser negativas.
+    await db.query(`INSERT INTO users (id, email, role) VALUES ('31111111-1111-1111-1111-111111111111', 'cupo@mail.example', 'player')`);
+    expect(await db.query(`SELECT extra_plays FROM users WHERE email = 'cupo@mail.example'`)).toEqual([{ extra_plays: 0 }]);
+    await expect(db.query(`UPDATE users SET extra_plays = -1 WHERE email = 'cupo@mail.example'`)).rejects.toThrow(
+      /users_extra_plays_check/,
+    );
+
+    // Pagos: pendiente por defecto y con proveedor «simulated»; los resueltos llevan fecha y los pendientes no.
+    const pay = (status: string, resolvedAt: string | null, plays = 10, price = 2000) =>
+      db.query(
+        `INSERT INTO play_payments (user_id, plays, price, status, resolved_at)
+         VALUES ('31111111-1111-1111-1111-111111111111', $1, $2, $3, $4)`,
+        [plays, price, status, resolvedAt],
+      );
+    await pay('pending', null);
+    await pay('approved', '2026-01-01T00:00:00Z');
+    await pay('rejected', '2026-01-01T00:00:00Z');
+    expect(await db.query(`SELECT status, provider FROM play_payments WHERE resolved_at IS NULL`)).toEqual([
+      { status: 'pending', provider: 'simulated' },
+    ]);
+    await expect(pay('approved', null)).rejects.toThrow(/play_payments_resolved_check/);
+    await expect(pay('pending', '2026-01-01T00:00:00Z')).rejects.toThrow(/play_payments_resolved_check/);
+    await expect(pay('cancelled', '2026-01-01T00:00:00Z')).rejects.toThrow(/play_payments_status_check/);
+    await expect(pay('pending', null, 0)).rejects.toThrow(/play_payments_plays_check/);
+    await expect(pay('pending', null, 10, 0)).rejects.toThrow(/play_payments_price_check/);
+
+    // Borrar al jugador borra sus pagos.
+    await db.query(`DELETE FROM users WHERE email = 'cupo@mail.example'`);
+    expect(await db.query(`SELECT 1 FROM play_payments`)).toHaveLength(0);
   });
 });

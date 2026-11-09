@@ -3,6 +3,7 @@ import type { AppDeps } from '../../app.js';
 import { platformAdminsRoutes } from './admins.js';
 import { platformClubsRoutes } from './clubs.js';
 import { platformCourtsRoutes } from './courts.js';
+import { platformPlaySettingsRoutes } from './playSettings.js';
 import { platformPlayersRoutes } from './players.js';
 import { platformSiteRoutes } from './site.js';
 
@@ -13,4 +14,5 @@ export async function platformRoutes(app: FastifyInstance, deps: AppDeps) {
   await platformAdminsRoutes(app, deps);
   await platformPlayersRoutes(app, deps);
   await platformSiteRoutes(app, deps);
+  await platformPlaySettingsRoutes(app, deps);
 }

@@ -12,9 +12,8 @@ import type { SessionUser } from '../auth/types.js';
 import { SpawnLauncher } from '../live/launcher.js';
 import { getPlayableVideoFile, getVisibleRecordings, type RecordingItem } from '../recordings/recordings.js';
 import { ClipAbortedError, createClipCutter } from './clip.js';
-
-/** Jugadas que puede tener cada jugador. */
-export const MAX_PLAYS_PER_PLAYER = 200;
+import { createPackPurchase, resolvePackPurchase } from './payments.js';
+import { DEFAULT_PLAY_SETTINGS, getPlayerQuota, getPlaySettings, quotaReachedMessage } from './quota.js';
 
 export const PLAY_CATEGORIES = ['Gol', 'Caño / Galleta', 'Atajada', 'Buena jugada', 'Bloopers', 'Otro'] as const;
 
@@ -164,44 +163,92 @@ export async function playsRoutes(app: FastifyInstance, deps: AppDeps) {
     return { plays: await withRecordings(rows) };
   });
 
-  // POST /api/plays -> 201 { play }; 409 si ya tiene 200.
+  // GET /api/plays/quota -> 200 { used, freeQuota, extraPlays, total, pack: { plays, price } }. El uso y el cupo del
+  // jugador con sesión (nunca los de otro) y el paquete vigente que se le ofrece al llegar al límite.
+  app.get('/plays/quota', async (req, reply) => {
+    const user = await requirePlayer(req);
+    const [quota, settings] = await Promise.all([getPlayerQuota(db, user.id), getPlaySettings(db)]);
+    reply.header('Cache-Control', 'no-store');
+    return { ...quota, pack: { plays: settings.packPlays, price: settings.packPrice } };
+  });
+
+  // POST /api/plays/pack-purchases -> 201 { payment }. Inicia la compra del paquete: un intento pendiente con la cantidad y
+  // el precio vigentes (que no cambian aunque el superadmin los edite después). Es una demostración: no se cobra nada.
+  app.post('/plays/pack-purchases', async (req, reply) => {
+    const user = await requirePlayer(req);
+    const payment = await createPackPurchase(db, user.id, now());
+    reply.header('Cache-Control', 'no-store');
+    return reply.status(201).send({ payment });
+  });
+
+  // POST /api/plays/pack-purchases/:id/approve y /reject -> 200 { payment, quota }. Resuelven el intento una sola vez:
+  // aprobar suma las jugadas del paquete al cupo y rechazar no suma nada. Repetir el mismo resultado responde 200 sin
+  // sumar de nuevo; pedir el contrario de uno ya resuelto, 409; uno inexistente o de otro jugador, 404.
+  for (const outcome of ['approved', 'rejected'] as const) {
+    app.post(`/plays/pack-purchases/:id/${outcome === 'approved' ? 'approve' : 'reject'}`, async (req, reply) => {
+      const user = await requirePlayer(req);
+      const parsed = idParam.safeParse(req.params);
+      if (!parsed.success) throw notFound('No encontramos ese pago.');
+
+      const result = await resolvePackPurchase(db, user.id, parsed.data.id, outcome, now());
+      if (result.kind === 'not_found') throw notFound('No encontramos ese pago.');
+      if (result.kind === 'conflict') {
+        throw new AppError(409, 'payment_already_resolved', 'Ese pago ya se resolvió de otra forma y no se puede cambiar.');
+      }
+      reply.header('Cache-Control', 'no-store');
+      return { payment: result.payment, quota: await getPlayerQuota(db, user.id) };
+    });
+  }
+
+  // POST /api/plays -> 201 { play }; 409 si ya tiene tantas jugadas como su cupo (el gratuito más sus jugadas extra).
   app.post('/plays', async (req, reply) => {
     const user = await requirePlayer(req);
     const body = createBody.parse(req.body);
 
     // Un solo INSERT condicional: no hay transacciones en `Database`, y así el tope y el alta van juntos.
+    // El tope es el cupo gratuito de `play_settings` más las jugadas extra del jugador, leídos en la misma sentencia.
+    // Este WHERE responde rápido al caso común; lo que garantiza el cupo ante altas simultáneas es el trigger
+    // `plays_quota_trigger` de la base, que falla con el check `plays_quota_check`.
     // Fragmento: el que mandó el jugador o, por defecto, 15 s antes y 5 s después del momento marcado. Una jugada en vivo no lo tiene.
     const mark = Math.floor(body.timestamp);
     const clipStart = body.isLiveMoment ? null : (body.clipStart ?? Math.max(0, mark - DEFAULT_CLIP_BEFORE_SECONDS));
     const clipEnd = body.isLiveMoment ? null : (body.clipEnd ?? mark + DEFAULT_CLIP_AFTER_SECONDS);
 
-    const rows = await db.query<PlayRow>(
-      `INSERT INTO plays (user_id, match_id, title, category, capture_mode, timestamp_seconds, is_live_moment, clip_start_seconds, clip_end_seconds, created_at)
-       SELECT $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::int, $7::boolean, $8::int, $9::int, $10::timestamptz
-        WHERE (SELECT count(*) FROM plays WHERE user_id = $1::uuid) < $11::int
-       RETURNING ${COLUMNS}`,
-      [
-        user.id,
-        body.matchId,
-        body.title,
-        body.category ?? null,
-        body.captureMode,
-        mark,
-        body.isLiveMoment,
-        clipStart,
-        clipEnd,
-        now(),
-        MAX_PLAYS_PER_PLAYER,
-      ],
-    );
-    const row = rows[0];
-    if (!row) {
-      throw new AppError(
-        409,
-        'plays_limit_reached',
-        `Llegaste al máximo de ${MAX_PLAYS_PER_PLAYER} jugadas guardadas. Borrá alguna para guardar otra.`,
+    const limitReached = async () => {
+      const { total } = await getPlayerQuota(db, user.id);
+      return new AppError(409, 'plays_limit_reached', quotaReachedMessage(total));
+    };
+
+    let rows: PlayRow[];
+    try {
+      rows = await db.query<PlayRow>(
+        `INSERT INTO plays (user_id, match_id, title, category, capture_mode, timestamp_seconds, is_live_moment, clip_start_seconds, clip_end_seconds, created_at)
+         SELECT $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::int, $7::boolean, $8::int, $9::int, $10::timestamptz
+          WHERE (SELECT count(*) FROM plays WHERE user_id = $1::uuid)
+                < COALESCE((SELECT free_quota FROM play_settings), $11::int) + (SELECT extra_plays FROM users WHERE id = $1::uuid)
+         RETURNING ${COLUMNS}`,
+        [
+          user.id,
+          body.matchId,
+          body.title,
+          body.category ?? null,
+          body.captureMode,
+          mark,
+          body.isLiveMoment,
+          clipStart,
+          clipEnd,
+          now(),
+          DEFAULT_PLAY_SETTINGS.freeQuota,
+        ],
       );
+    } catch (err) {
+      // El trigger de la base rechazó el alta: otro pedido simultáneo ocupó el último lugar del cupo.
+      const pgErr = err as { code?: string; constraint?: string };
+      if (pgErr.code === '23514' && pgErr.constraint === 'plays_quota_check') throw await limitReached();
+      throw err;
     }
+    const row = rows[0];
+    if (!row) throw await limitReached();
     const [play] = await withRecordings([row]);
     return reply.status(201).send({ play });
   });

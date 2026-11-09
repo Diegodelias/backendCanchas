@@ -210,6 +210,117 @@ describe('jugadas del jugador', () => {
       expect((await create(bruno)).statusCode).toBe(201);
     });
 
+    describe('cupo configurable', () => {
+      const setQuota = (freeQuota: number) => env.db.query(`UPDATE play_settings SET free_quota = ${freeQuota}`);
+      const giveExtra = (email: string, extra: number) =>
+        env.db.query(`UPDATE users SET extra_plays = ${extra} WHERE email = $1`, [email]);
+
+      it('con el valor inicial, 199 jugadas dejan guardar una más y 200 no', async () => {
+        const ana = await loginPlayer(ANA);
+        const [user] = await env.db.query<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [ANA]);
+        await env.db.query(
+          `INSERT INTO plays (user_id, match_id, title, capture_mode, timestamp_seconds)
+           SELECT $1, 'm-' || g, 'Jugada ' || g, 'video', g FROM generate_series(1, 199) g`,
+          [user!.id],
+        );
+        expect((await create(ana)).statusCode).toBe(201);
+        expect((await create(ana)).statusCode).toBe(409);
+      });
+
+      it('con el cupo en 3, el cuarto guardado responde 409 con ese cupo', async () => {
+        await setQuota(3);
+        const ana = await loginPlayer(ANA);
+        for (let i = 0; i < 3; i++) expect((await create(ana)).statusCode).toBe(201);
+
+        const res = await create(ana);
+        expect(res.statusCode).toBe(409);
+        expect(body(res).error.code).toBe('plays_limit_reached');
+        expect(body(res).error.message).toContain('3');
+        expect(await countPlays()).toBe(3);
+      });
+
+      it('con el cupo en 0 no se puede guardar ninguna', async () => {
+        await setQuota(0);
+        const ana = await loginPlayer(ANA);
+        expect((await create(ana)).statusCode).toBe(409);
+        expect(await countPlays()).toBe(0);
+      });
+
+      it('las jugadas extra se suman al cupo gratuito y el mensaje dice el total', async () => {
+        await setQuota(1);
+        const ana = await loginPlayer(ANA);
+        await giveExtra(ANA, 2);
+        for (let i = 0; i < 3; i++) expect((await create(ana)).statusCode).toBe(201);
+
+        const res = await create(ana);
+        expect(res.statusCode).toBe(409);
+        expect(body(res).error.message).toContain('3');
+      });
+
+      it('las jugadas extra son de cada jugador', async () => {
+        await setQuota(1);
+        const ana = await loginPlayer(ANA);
+        const bruno = await loginPlayer(BRUNO);
+        await giveExtra(ANA, 1);
+        expect((await create(ana)).statusCode).toBe(201);
+        expect((await create(ana)).statusCode).toBe(201);
+        expect((await create(bruno)).statusCode).toBe(201);
+        expect((await create(bruno)).statusCode).toBe(409);
+      });
+
+      it('borrar una jugada libera un lugar', async () => {
+        await setQuota(2);
+        const ana = await loginPlayer(ANA);
+        const first = body(await create(ana)).play;
+        await create(ana);
+        expect((await create(ana)).statusCode).toBe(409);
+
+        await call('DELETE', `/api/plays/${first.id}`, ana);
+        expect((await create(ana)).statusCode).toBe(201);
+      });
+
+      it('bajar el cupo por debajo de lo guardado conserva las jugadas y solo impide guardar más', async () => {
+        const ana = await loginPlayer(ANA);
+        for (let i = 0; i < 5; i++) expect((await create(ana)).statusCode).toBe(201);
+
+        await setQuota(3);
+        const { plays } = body(await call('GET', '/api/plays', ana));
+        expect(plays).toHaveLength(5);
+        expect((await create(ana)).statusCode).toBe(409);
+        expect(await countPlays()).toBe(5);
+
+        // Con menos jugadas que el cupo vuelve a poder guardar, hasta completarlo.
+        for (const p of plays.slice(0, 3)) await call('DELETE', `/api/plays/${p.id}`, ana);
+        expect((await create(ana)).statusCode).toBe(201);
+        expect((await create(ana)).statusCode).toBe(409);
+      });
+
+      // Sin el trigger de la base, con 40 pedidos simultáneos el tope se superaba por 1 (el `INSERT … WHERE count < cupo`
+      // ve la misma instantánea). Se repite en varias rondas porque la carrera no se da siempre.
+      it('varios guardados simultáneos al borde del cupo no lo superan', async () => {
+        const ana = await loginPlayer(ANA);
+        for (let round = 0; round < 5; round++) {
+          await env.db.query('DELETE FROM plays');
+          await setQuota(5);
+          const results = await Promise.all(Array.from({ length: 40 }, () => create(ana)));
+          expect(results.filter((r) => r.statusCode === 201)).toHaveLength(5);
+          expect(results.filter((r) => r.statusCode === 409)).toHaveLength(35);
+          expect(await countPlays()).toBe(5);
+        }
+      });
+
+      it('el mensaje del 409 de un alta simultánea dice el cupo total', async () => {
+        await setQuota(2);
+        const ana = await loginPlayer(ANA);
+        await giveExtra(ANA, 1);
+        const results = await Promise.all(Array.from({ length: 10 }, () => create(ana)));
+        const rejected = results.find((r) => r.statusCode === 409)!;
+        expect(body(rejected).error.code).toBe('plays_limit_reached');
+        expect(body(rejected).error.message).toContain('3');
+        expect(await countPlays()).toBe(3);
+      });
+    });
+
     it('rechaza un identificador de partido de más de 100 caracteres', async () => {
       const ana = await loginPlayer(ANA);
       expect((await create(ana, { matchId: 'x'.repeat(101) })).statusCode).toBe(400);

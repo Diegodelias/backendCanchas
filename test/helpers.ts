@@ -211,6 +211,8 @@ export async function createDbTestEnv(
       await deleteTestClubs(db);
       // El nombre del sitio no se vacía con las demás tablas: vuelve al valor por defecto.
       await db.query(`UPDATE site_settings SET name = 'Canchas3', logo_color = NULL`);
+      // Lo mismo con el cupo de jugadas y el paquete: vuelven a 200 jugadas gratis y a 5 jugadas por $2.000.
+      await db.query(`UPDATE play_settings SET free_quota = 200, pack_plays = 5, pack_price = 2000`);
       mailer.sent.length = 0;
       mailer.failWith = null;
       mailer.attempts = 0;

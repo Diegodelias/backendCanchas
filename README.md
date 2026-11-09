@@ -152,12 +152,24 @@ Cada jugada es de su dueño: una jugada ajena responde `404`, y los admins de cl
 | Método y ruta | Respuestas |
 |---|---|
 | `GET /api/plays` | `200 { plays }`, las del jugador, de la más reciente a la más antigua |
-| `POST /api/plays` `{ matchId, title, category?, captureMode?, timestamp, isLiveMoment?, clipStart?, clipEnd? }` | `201 { play }`; `409 plays_limit_reached` (tope de 200 por jugador); `400 validation_error` (también por un fragmento inválido) |
+| `GET /api/plays/quota` | `200 { used, freeQuota, extraPlays, total, pack: { plays, price } }`: su uso, su cupo y el paquete vigente (ver «Cupo de jugadas») |
+| `POST /api/plays/pack-purchases` | `201 { payment }`: inicia la compra **simulada** del paquete (intento `pending` con la cantidad y el precio vigentes) |
+| `POST /api/plays/pack-purchases/:id/approve` y `.../reject` | `200 { payment, quota }`: resuelven el intento **una sola vez**; repetir el mismo resultado responde `200` sin sumar de nuevo; el contrario de uno ya resuelto, `409 payment_already_resolved`; ajeno o inexistente, `404` |
+| `POST /api/plays` `{ matchId, title, category?, captureMode?, timestamp, isLiveMoment?, clipStart?, clipEnd? }` | `201 { play }`; `409 plays_limit_reached` (el jugador ya tiene tantas jugadas como su cupo; ver «Cupo de jugadas»); `400 validation_error` (también por un fragmento inválido) |
 | `PATCH /api/plays/:id` `{ title?, category? }` | `200 { play }`; `404` |
 | `GET /api/plays/:id/clip` | El mp4 del fragmento de la jugada (ver «Fragmento de una jugada»); `404` (ajena, inexistente, en vivo o con la grabación no disponible); `503 clip_busy`; `504 clip_timeout`; `502 clip_failed` |
 | `DELETE /api/plays/:id` | `204`; `404` |
 
 `play` es `{ id, matchId, title, category, captureMode, timestamp, isLiveMoment, clipStart, clipEnd, createdAt, recording }`. `matchId` es un texto de hasta 100 caracteres que **no se valida** contra ninguna grabación: puede ser una grabación, una cámara en vivo o algo que ya no existe. `recording` trae los datos de la grabación (ver «Grabaciones») o `null` si el `matchId` no corresponde a una grabación visible.
+
+### Cupo de jugadas
+
+Cada jugador puede tener guardadas, como mucho, tantas jugadas como su **cupo**: el **cupo gratuito** (igual para todos, **200** mientras el superadmin no lo cambie) más sus **jugadas extra** (propias de cada jugador, empiezan en 0).
+
+- Se cuentan las jugadas guardadas **ahora**: borrar una libera cupo. Bajar el cupo **nunca borra** jugadas ya guardadas; el jugador las conserva y solo no puede guardar más hasta tener menos jugadas que su cupo.
+- Lo garantiza la base: el trigger `plays_quota_trigger` toma un candado por jugador y recuenta, de modo que varios guardados simultáneos no pasan el cupo. La API lo traduce al mismo `409 plays_limit_reached`, con el cupo total en el mensaje.
+- **Compra del paquete (simulada):** al llegar al límite el jugador puede comprar un paquete de jugadas extra (por defecto **5 por $2.000**, pesos argentinos enteros, editables por el superadmin). **Es una demostración: no se cobra nada ni se piden ni guardan datos de pago.** Cada intento se registra en `play_payments` con la cantidad y el precio vigentes al iniciarlo (no cambian si después cambia el paquete), su estado (`pending`, `approved`, `rejected`) y `provider = 'simulated'`. Aprobar suma las jugadas del paquete a `users.extra_plays` en la misma sentencia en que marca el pago como resuelto, así que un pago nunca suma dos veces aunque lleguen aprobaciones simultáneas. Para conectar Mercado Pago bastará con otro valor de `provider` y una referencia externa.
+- La configuración vive en la tabla de una fila `play_settings` (cupo gratuito, jugadas del paquete extra y su precio, con 200, 5 y $2.000 como valores iniciales) y las jugadas extra en `users.extra_plays`.
 
 ### Fragmento de una jugada
 
@@ -244,6 +256,9 @@ Todas las rutas de `/api/platform/...` son **solo para un superadmin con sesión
 | `POST /api/platform/clubs/:clubId/admins/:adminId/invitation` | `200 { admin, emailSent }`; `409 admin_not_invited` (solo se reenvía a un Invitado); `429`; `404` |
 | `DELETE /api/platform/clubs/:clubId/admins/:adminId` | `204` (baja lógica); `404` (no existe, es de otro club o ya estaba de baja) |
 | `PUT /api/platform/site` `{ name, logoColor? }` | `200 { name, logoColor }`: cambia el nombre del sitio (se guarda sin espacios al borde) y, si viene, el color del logo; `400 validation_error` si el nombre está vacío, tiene más de 40 caracteres o un salto de línea, o si `logoColor` no es de la paleta |
+| `GET /api/platform/play-settings` | `200 { freeQuota, packPlays, packPrice }`: el cupo gratuito y el paquete extra vigentes |
+| `PUT /api/platform/play-settings` `{ freeQuota, packPlays, packPrice }` | `200` con lo guardado: los tres enteros (cupo 0 a 10 000, paquete 1 a 1 000 jugadas, precio 1 a 1 000 000 de pesos); `400 validation_error` con el motivo. Bajar el cupo no borra jugadas |
+| `POST /api/platform/players/extra-plays` `{ email, plays }` | `200 { player: { email }, quota }`: suma de 1 a 1 000 jugadas extra al cupo de un jugador; `404 player_not_found` si el mail no es de un jugador (tampoco de un admin); `400 validation_error` |
 
 ### Admins de club por invitación
 
