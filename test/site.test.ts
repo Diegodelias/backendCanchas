@@ -24,13 +24,13 @@ describe('nombre del sitio', () => {
     it('sin configurar devuelve «Canchas3», sin sesión y sin copia guardada', async () => {
       const res = await get();
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ name: 'Canchas3' });
+      expect(res.json()).toEqual({ name: 'Canchas3', logoColor: null });
       expect(res.headers['cache-control']).toBe('no-store');
     });
 
     it('devuelve el nombre guardado', async () => {
       await rename('Club Central');
-      expect((await get()).json()).toEqual({ name: 'Club Central' });
+      expect((await get()).json()).toEqual({ name: 'Club Central', logoColor: null });
     });
 
     it('si la fila faltara, responde el nombre por defecto en lugar de fallar', async () => {
@@ -38,7 +38,7 @@ describe('nombre del sitio', () => {
       try {
         const res = await get();
         expect(res.statusCode).toBe(200);
-        expect(res.json()).toEqual({ name: 'Canchas3' });
+        expect(res.json()).toEqual({ name: 'Canchas3', logoColor: null });
       } finally {
         await env.db.query(`INSERT INTO site_settings (name) VALUES ('Canchas3')`);
       }
@@ -53,16 +53,16 @@ describe('nombre del sitio', () => {
       const sa = await kit.loginSuperadmin();
       const res = await put({ name: '  Club Central  ' }, sa);
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ name: 'Club Central' });
+      expect(res.json()).toEqual({ name: 'Club Central', logoColor: null });
       expect(await stored()).toBe('Club Central');
-      expect((await get()).json()).toEqual({ name: 'Club Central' });
+      expect((await get()).json()).toEqual({ name: 'Club Central', logoColor: null });
     });
 
     it('se puede volver a cambiar, también al nombre por defecto', async () => {
       const sa = await kit.loginSuperadmin();
       await put({ name: 'Club Central' }, sa);
       expect((await put({ name: 'Canchas3' }, sa)).statusCode).toBe(200);
-      expect((await get()).json()).toEqual({ name: 'Canchas3' });
+      expect((await get()).json()).toEqual({ name: 'Canchas3', logoColor: null });
     });
 
     it('acepta el largo máximo y rechaza uno más', async () => {
@@ -101,10 +101,59 @@ describe('nombre del sitio', () => {
       expect(await stored()).toBe('Canchas3');
     });
 
+    it('guarda el color con el nombre y GET /api/site lo refleja', async () => {
+      const sa = await kit.loginSuperadmin();
+      const res = await put({ name: 'Club Central', logoColor: 'violeta' }, sa);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ name: 'Club Central', logoColor: 'violeta' });
+      expect((await get()).json()).toEqual({ name: 'Club Central', logoColor: 'violeta' });
+    });
+
+    it('acepta cada color de la paleta', async () => {
+      const sa = await kit.loginSuperadmin();
+      for (const logoColor of ['verde', 'azul', 'rojo', 'naranja', 'violeta', 'tinta']) {
+        expect((await put({ name: 'Club', logoColor }, sa)).json()).toEqual({ name: 'Club', logoColor });
+      }
+    });
+
+    it('sin color en el pedido conserva el que había; null vuelve al predeterminado', async () => {
+      const sa = await kit.loginSuperadmin();
+      await put({ name: 'Club Central', logoColor: 'rojo' }, sa);
+      expect((await put({ name: 'Club Norte' }, sa)).json()).toEqual({ name: 'Club Norte', logoColor: 'rojo' });
+      expect((await put({ name: 'Club Norte', logoColor: null }, sa)).json()).toEqual({ name: 'Club Norte', logoColor: null });
+      expect((await get()).json()).toEqual({ name: 'Club Norte', logoColor: null });
+    });
+
+    it('rechaza un color fuera de la paleta sin cambiar nada', async () => {
+      const sa = await kit.loginSuperadmin();
+      await put({ name: 'Club Central', logoColor: 'azul' }, sa);
+      for (const bad of ['#ff0000', 'amarillo', '', 7, 'AZUL']) {
+        const res = await put({ name: 'Otro', logoColor: bad }, sa);
+        expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+        expect(res.json().error.code).toBe('validation_error');
+      }
+      expect((await get()).json()).toEqual({ name: 'Club Central', logoColor: 'azul' });
+    });
+
+    it('un color inválido con un nombre válido no cambia el nombre', async () => {
+      const sa = await kit.loginSuperadmin();
+      await put({ name: 'Club Central' }, sa);
+      expect((await put({ name: 'Otro', logoColor: 'verde-lima' }, sa)).statusCode).toBe(400);
+      expect(await stored()).toBe('Club Central');
+    });
+
+    it('otros roles no pueden cambiar el color', async () => {
+      const club = await kit.createClub('test-sitio-color');
+      const admin = await kit.loginAdmin(club);
+      expect((await put({ name: 'Canchas3', logoColor: 'rojo' })).statusCode).toBe(401);
+      expect((await put({ name: 'Canchas3', logoColor: 'rojo' }, admin)).statusCode).toBe(403);
+      expect((await get()).json()).toEqual({ name: 'Canchas3', logoColor: null });
+    });
+
     it('un nombre con símbolos se guarda tal cual, sin interpretarse', async () => {
       const sa = await kit.loginSuperadmin();
       await put({ name: '<b>Club</b> & Co' }, sa);
-      expect((await get()).json()).toEqual({ name: '<b>Club</b> & Co' });
+      expect((await get()).json()).toEqual({ name: '<b>Club</b> & Co', logoColor: null });
     });
   });
 
@@ -189,13 +238,23 @@ describe('nombre del sitio', () => {
       for (const bad of ['', 'x'.repeat(41), ' Club', 'Club ', 'Club\nCentral', 'Club\rCentral']) {
         await expect(rename(bad), JSON.stringify(bad)).rejects.toThrow(/site_settings_name_check/);
       }
-      expect((await get()).json()).toEqual({ name: 'Canchas3' });
+      expect((await get()).json()).toEqual({ name: 'Canchas3', logoColor: null });
+    });
+
+    it('rechaza una clave de color fuera de la paleta y acepta nulo', async () => {
+      const setColor = (value: string | null) => env.db.query(`UPDATE site_settings SET logo_color = $1`, [value]);
+      for (const bad of ['', 'amarillo', 'AZUL', '#fff']) {
+        await expect(setColor(bad), bad).rejects.toThrow(/site_settings_logo_color_check/);
+      }
+      await setColor('azul');
+      await setColor(null);
+      expect((await get()).json()).toEqual({ name: 'Canchas3', logoColor: null });
     });
 
     it('acepta el largo máximo y los números, tildes y símbolos del nombre', async () => {
       for (const ok of ['x'.repeat(40), 'Cancha7', 'Canchas del Sur & Co.', 'Ñandú Fútbol']) {
         await rename(ok);
-        expect((await get()).json()).toEqual({ name: ok });
+        expect((await get()).json()).toEqual({ name: ok, logoColor: null });
       }
     });
   });

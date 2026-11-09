@@ -243,7 +243,7 @@ Todas las rutas de `/api/platform/...` son **solo para un superadmin con sesión
 | `POST /api/platform/clubs/:clubId/admins` `{ email, name }` | `201 { admin, emailSent }`; `409 email_is_admin` / `email_is_player` / `email_other_club`; `429 too_many_requests`; `400 validation_error` |
 | `POST /api/platform/clubs/:clubId/admins/:adminId/invitation` | `200 { admin, emailSent }`; `409 admin_not_invited` (solo se reenvía a un Invitado); `429`; `404` |
 | `DELETE /api/platform/clubs/:clubId/admins/:adminId` | `204` (baja lógica); `404` (no existe, es de otro club o ya estaba de baja) |
-| `PUT /api/platform/site` `{ name }` | `200 { name }`: cambia el nombre del sitio (se guarda sin espacios al borde); `400 validation_error` si está vacío, tiene más de 40 caracteres o un salto de línea |
+| `PUT /api/platform/site` `{ name, logoColor? }` | `200 { name, logoColor }`: cambia el nombre del sitio (se guarda sin espacios al borde) y, si viene, el color del logo; `400 validation_error` si el nombre está vacío, tiene más de 40 caracteres o un salto de línea, o si `logoColor` no es de la paleta |
 
 ### Admins de club por invitación
 
@@ -260,10 +260,12 @@ El estado de un admin no se guarda: sale de `deactivated_at` y `password_hash`.
 
 El nombre que se muestra en el logo, la interfaz y los mails es una configuración que edita el superadmin desde su panel (`PUT /api/platform/site`), guardada en la tabla `site_settings` (una sola fila). Sin tocarla vale **«Canchas3»**.
 
+`logoColor` es la clave del color del logo, de una paleta cerrada (`verde`, `azul`, `rojo`, `naranja`, `violeta`, `tinta`), o `null` para el predeterminado; los colores en sí viven en el frontend. En el `PUT`, omitirlo deja el color como estaba, `null` vuelve al predeterminado y una clave fuera de la paleta da `400`.
+
 | Método y ruta | Quién | Respuestas |
 |---|---|---|
-| `GET /api/site` | Cualquiera, sin sesión | `200 { name }`; sin copia guardada, para que el cambio se vea al recargar |
-| `PUT /api/platform/site` `{ name }` | Superadmin | `200 { name }`; `400 validation_error`; `401` / `403` |
+| `GET /api/site` | Cualquiera, sin sesión | `200 { name, logoColor }`; sin copia guardada, para que el cambio se vea al recargar |
+| `PUT /api/platform/site` `{ name, logoColor? }` | Superadmin | `200 { name, logoColor }`; `400 validation_error`; `401` / `403` |
 
 - **Reglas del nombre:** entre 1 y 40 caracteres, sin espacios al principio ni al final y sin saltos de línea. Las repite una restricción de la base.
 - **Mails:** el asunto, el texto y el **nombre visible del remitente** de los mails de acceso, invitación y recuperación usan el nombre vigente al momento de enviar. La **dirección** del remitente sigue saliendo de `MAIL_FROM`: su nombre visible (`Canchas3 <...>`) solo se usa si un mensaje no trae nombre. La autenticación del dominio (SPF y DKIM) no cambia.

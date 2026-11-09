@@ -37,6 +37,7 @@ describe('migraciones', () => {
       '1763300000000_fragmento-de-jugada',
       '1763400000000_codigo-de-acceso',
       '1763500000000_nombre-del-sitio',
+      '1763600000000_color-del-logo',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -363,6 +364,7 @@ describe('migraciones', () => {
       '1763300000000_fragmento-de-jugada',
       '1763400000000_codigo-de-acceso',
       '1763500000000_nombre-del-sitio',
+      '1763600000000_color-del-logo',
     ]);
     const clips = await db.query<{ id: string; clip_start_seconds: number | null; clip_end_seconds: number | null }>(
       `SELECT id, clip_start_seconds, clip_end_seconds FROM plays ORDER BY id`,
@@ -410,7 +412,11 @@ describe('migraciones', () => {
       rmSync(partial, { recursive: true, force: true });
     }
 
-    expect(await runMigrations(url)).toEqual(['1763400000000_codigo-de-acceso', '1763500000000_nombre-del-sitio']);
+    expect(await runMigrations(url)).toEqual([
+      '1763400000000_codigo-de-acceso',
+      '1763500000000_nombre-del-sitio',
+      '1763600000000_color-del-logo',
+    ]);
     const [old] = await db.query<{ code_hash: string | null; code_attempts: number }>(
       `SELECT code_hash, code_attempts FROM login_tokens WHERE token_hash = 'hash-viejo'`,
     );
@@ -423,13 +429,13 @@ describe('migraciones', () => {
       ),
     ).rejects.toThrow(/login_tokens_code_attempts_check/);
 
-    // Bajar las dos últimas (el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
+    // Bajar las tres últimas (el color del logo, el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
     const { runner } = await import('node-pg-migrate');
     await runner({
       databaseUrl: url,
       dir: MIGRATIONS_DIR,
       direction: 'down',
-      count: 2,
+      count: 3,
       migrationsTable: 'pgmigrations',
       checkOrder: true,
       singleTransaction: true,
