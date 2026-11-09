@@ -4,7 +4,7 @@ import type { AppDeps } from '../../app.js';
 import { forbidden, notFound, unauthorized } from '../../lib/errors.js';
 import { createPlayer, createPlayerBody } from '../auth/players.js';
 import { resolveSession, SESSION_COOKIE } from '../auth/sessions.js';
-import { listClubBookings } from '../bookings/bookings.js';
+import { deleteBooking, listClubBookings } from '../bookings/bookings.js';
 import { listClubRecordings } from '../recordings/recordings.js';
 import { getSchedule, replaceSchedule, requireCourt, scheduleBody } from '../bookings/schedules.js';
 import { CITY_IDS } from './clubs.js';
@@ -198,6 +198,15 @@ export async function clubsRoutes(app: FastifyInstance, deps: AppDeps) {
     const clubId = await requireClubAdmin(req);
     reply.header('Cache-Control', 'no-store');
     return { bookings: await listClubBookings(db, clubId) };
+  });
+
+  // DELETE /api/club/bookings/:id -> 204. Elimina de forma definitiva una reserva de una cancha del club (el turno
+  // queda libre al instante); 404 si no existe o es de otro club.
+  app.delete('/club/bookings/:id', async (req, reply) => {
+    const clubId = await requireClubAdmin(req);
+    const { id } = idParam.parse(req.params);
+    await deleteBooking(db, id, clubId);
+    return reply.status(204).send();
   });
 
   // GET /api/club/recordings -> { recordings } de las canchas del club (cualquier estado), solo lectura.

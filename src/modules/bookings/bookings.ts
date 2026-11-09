@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Database } from '../../db/client.js';
-import { AppError, badRequest } from '../../lib/errors.js';
+import { AppError, badRequest, notFound } from '../../lib/errors.js';
 import { ATTEMPT_WINDOW_MS } from '../auth/attempts.js';
 import type { BookableCourt } from './slots.js';
 import { formatHour, isBookableStart, isoWeekday, MAX_DAYS_AHEAD, SLOT_MS, toArgentina } from './time.js';
@@ -167,4 +167,19 @@ export async function listClubBookings(db: Database, clubId: string): Promise<Bo
       fromPlayer: row.player_id !== null,
     };
   });
+}
+
+/**
+ * Elimina una reserva de forma definitiva: el turno queda libre al instante y no se avisa a nadie. Con `clubId` solo
+ * borra si la reserva es de una cancha de ese club. Una reserva que no existe o es de otro club responde igual (404),
+ * sin revelar cuál es el caso.
+ */
+export async function deleteBooking(db: Database, bookingId: string, clubId: string): Promise<void> {
+  const rows = await db.query<{ id: string }>(
+    `DELETE FROM bookings b USING courts k
+      WHERE b.id = $1 AND k.id = b.court_id AND k.club_id = $2
+      RETURNING b.id`,
+    [bookingId, clubId],
+  );
+  if (rows.length === 0) throw notFound('No encontramos esa reserva.');
 }

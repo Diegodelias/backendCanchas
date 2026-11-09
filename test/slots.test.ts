@@ -52,6 +52,35 @@ describe('turnos libres', () => {
     expect((await slots(TUESDAY)).times).toEqual(['16:00', '18:00']);
   });
 
+  it('un turno reservado va en `booked`, con su horario y sin datos de quien reservó', async () => {
+    await kit.setSchedule(court, [{ weekday: 2, startHour: 16, endHour: 19 }]);
+    await book('2026-03-03T17:00:00-03:00');
+    const { res, times } = await slots(TUESDAY);
+    expect(times).toEqual(['16:00', '18:00']);
+    expect(kit.body(res).booked).toEqual([{ startsAt: '2026-03-03T20:00:00.000Z', time: '17:00' }]);
+    expect(JSON.stringify(kit.body(res))).not.toMatch(/ana@mail\.example|Ana/);
+  });
+
+  it('sin reservas `booked` viene vacío, y con todo reservado `slots` viene vacío', async () => {
+    await kit.setSchedule(court, [{ weekday: 2, startHour: 16, endHour: 18 }]);
+    expect(kit.body((await slots(TUESDAY)).res).booked).toEqual([]);
+    await book('2026-03-03T16:00:00-03:00');
+    await book('2026-03-03T17:00:00-03:00');
+    const { res, times } = await slots(TUESDAY);
+    expect(times).toEqual([]);
+    expect(kit.body(res).booked.map((s: { time: string }) => s.time)).toEqual(['16:00', '17:00']);
+  });
+
+  it('un turno reservado que ya no cumple la anticipación mínima no aparece ni como libre ni como reservado', async () => {
+    await kit.setSchedule(court, [{ weekday: 1, startHour: 16, endHour: 21 }]);
+    await book('2026-03-02T18:00:00-03:00');
+    await book('2026-03-02T20:00:00-03:00');
+    env.clock.current = new Date('2026-03-02T20:30:00Z'); // 17:30: el de las 18:00 ya no se ofrece
+    const { res, times } = await slots(MONDAY);
+    expect(times).toEqual(['19:00']);
+    expect(kit.body(res).booked.map((s: { time: string }) => s.time)).toEqual(['20:00']);
+  });
+
   it('una reserva de otra cancha no afecta a esta', async () => {
     await kit.setSchedule(court, [{ weekday: 2, startHour: 16, endHour: 18 }]);
     const other = await kit.createCourt('test-turnos', 'Cancha 2');
@@ -60,7 +89,9 @@ describe('turnos libres', () => {
        VALUES ('x1', $1, '2026-03-03T16:00:00-03:00', 1000, 'Ana', 'ana@mail.example', '1.1.1.1')`,
       [other],
     );
-    expect((await slots(TUESDAY)).times).toEqual(['16:00', '17:00']);
+    const mine = await slots(TUESDAY);
+    expect(mine.times).toEqual(['16:00', '17:00']);
+    expect(kit.body(mine.res).booked).toEqual([]);
   });
 
   it('abierta las 24 horas ofrece 24 turnos', async () => {

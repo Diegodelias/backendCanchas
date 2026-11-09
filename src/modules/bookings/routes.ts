@@ -12,7 +12,7 @@ import {
   playerBookingBody,
   type BookingGuest,
 } from './bookings.js';
-import { freeSlots, requireBookableCourt } from './slots.js';
+import { daySlots, requireBookableCourt } from './slots.js';
 import { bookingWindow, formatHour, MAX_DAYS_AHEAD, parseDate, toArgentina } from './time.js';
 
 const courtParam = z.object({ courtId: z.string().min(1).max(100) });
@@ -25,8 +25,9 @@ export async function bookingsRoutes(app: FastifyInstance, deps: AppDeps) {
   if (!mailer) throw new Error('bookingsRoutes necesita un mailer (lo arma buildApp).');
   const now = deps.now ?? (() => new Date());
 
-  // GET /api/courts/:courtId/slots?date=YYYY-MM-DD -> los turnos libres de ese día (en hora de Argentina).
-  // Público; sin copia guardada, porque un turno se ocupa en cualquier momento.
+  // GET /api/courts/:courtId/slots?date=YYYY-MM-DD -> { court, date, slots, booked }: los turnos libres de ese día (en hora
+  // de Argentina) y, aparte, los que ya están reservados (solo el horario, sin datos de quien reservó).
+  // Público; sin copia guardada, porque un turno se ocupa y se libera en cualquier momento.
   app.get('/courts/:courtId/slots', async (req, reply) => {
     const { courtId } = courtParam.parse(req.params);
     const { date } = slotsQuery.parse(req.query);
@@ -37,7 +38,8 @@ export async function bookingsRoutes(app: FastifyInstance, deps: AppDeps) {
     }
     const court = await requireBookableCourt(db, courtId);
     reply.header('Cache-Control', 'no-store');
-    return { court: { id: court.id, name: court.name, price: court.price }, date, slots: await freeSlots(db, courtId, date, now()) };
+    const { slots, booked } = await daySlots(db, courtId, date, now());
+    return { court: { id: court.id, name: court.name, price: court.price }, date, slots, booked };
   });
 
   // POST /api/courts/:courtId/bookings -> 201 { booking, emailSent }. Sin sesión (invitado: nombre y mail) o con sesión

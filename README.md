@@ -196,13 +196,15 @@ Cada cancha tiene un **horario semanal** y se puede **reservar** un turno de 60 
 
 | Método y ruta | Quién | Respuestas |
 |---|---|---|
-| `GET /api/courts/:courtId/slots?date=AAAA-MM-DD` | Cualquiera, sin sesión | `200 { court, date, slots: [{ startsAt, time }] }` con los turnos libres de ese día (vacío si la cancha no tiene horarios o ese día está cerrada); `400 validation_error` si la fecha no es válida o está fuera de la ventana; `404` si la cancha está desactivada, borrada o es de un club desactivado |
+| `GET /api/courts/:courtId/slots?date=AAAA-MM-DD` | Cualquiera, sin sesión | `200 { court, date, slots: [{ startsAt, time }], booked: [{ startsAt, time }] }`: `slots` son los turnos libres de ese día y `booked` los que se ofrecerían pero ya están reservados (solo el horario, sin datos de quien reservó); ambos vacíos si la cancha no tiene horarios o ese día está cerrada, y un turno que no cumple la anticipación mínima no está en ninguno; `400 validation_error` si la fecha no es válida o está fuera de la ventana; `404` si la cancha está desactivada, borrada o es de un club desactivado |
 | `POST /api/courts/:courtId/bookings` `{ startsAt, name, email, phone? }` | Cualquiera; con sesión de jugador alcanza `{ startsAt }` | `201 { booking, emailSent }`; `400 validation_error`; `404` (cancha no reservable o sin horarios); `409 slot_taken`; `429 too_many_bookings` |
 | `GET /api/club/courts/:courtId/schedule` | Admin de club | `200 { days: [{ weekday, startHour, endHour }] }`; `404` si la cancha es de otro club o está borrada |
 | `PUT /api/club/courts/:courtId/schedule` `{ days }` | Admin de club | `200 { days }`: reemplaza **todo** el horario; `400 validation_error` indica el día; `404` |
 | `GET /api/club/bookings` | Admin de club | `200 { bookings }` de las canchas de su club, de la fecha de turno más lejana a la más cercana |
+| `DELETE /api/club/bookings/:id` | Admin de club | `204`: elimina **de forma definitiva** una reserva de una cancha de su club (el turno queda libre al instante y no se avisa por mail); `404` si la reserva no existe o es de otro club (mismo mensaje en los dos casos); `401` / `403` |
 | `GET` y `PUT /api/platform/clubs/:clubId/courts/:courtId/schedule` | Superadmin | Igual que las del admin, sobre cualquier club |
 | `GET /api/platform/clubs/:clubId/bookings` | Superadmin | `200 { club, bookings }` |
+| `DELETE /api/platform/clubs/:clubId/bookings/:bookingId` | Superadmin | `204`: elimina de forma definitiva una reserva de ese club; `404` si el club no existe o la reserva no existe o es de otro club; `401` / `403` |
 
 - **Horario:** `weekday` va de 1 (lunes) a 7 (domingo); `startHour` de 0 a 23 y `endHour` de 1 a 24, horas enteras, con el cierre posterior a la apertura. Un día que no está en `days` es un día cerrado; una cancha sin días no tiene turnos y no se puede reservar. Cambiar el horario **no toca las reservas ya hechas**. Los listados de canchas del panel traen `hasSchedule`.
 - **Turnos libres:** se calculan al consultar (horario del día menos reservas); no hay una fila por turno. Se ofrecen los que empiezan al menos 1 hora después de ahora y hasta hoy + 14 días.

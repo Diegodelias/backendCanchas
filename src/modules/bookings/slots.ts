@@ -29,30 +29,39 @@ export interface Slot {
   time: string;
 }
 
+export interface DaySlots {
+  /** Turnos que se pueden reservar. */
+  slots: Slot[];
+  /** Turnos que se ofrecerían pero ya están reservados. Solo el horario: nunca datos de quien reservó. */
+  booked: Slot[];
+}
+
 /**
- * Turnos libres de un día (`YYYY-MM-DD` ya validado y dentro de la ventana): las horas del rango de ese día de la
- * semana, menos las reservadas y menos las que no cumplen la anticipación mínima. Se calculan al consultar.
+ * Turnos de un día (`YYYY-MM-DD` ya validado y dentro de la ventana): las horas del rango de ese día de la semana que
+ * cumplen la anticipación mínima, repartidas en libres y reservadas. Un turno que no cumple la anticipación mínima no
+ * aparece en ninguna de las dos listas. Se calculan al consultar.
  */
-export async function freeSlots(db: Database, courtId: string, date: string, now: Date): Promise<Slot[]> {
+export async function daySlots(db: Database, courtId: string, date: string, now: Date): Promise<DaySlots> {
   const [range] = await db.query<{ start_hour: number; end_hour: number }>(
     `SELECT start_hour, end_hour FROM court_schedules WHERE court_id = $1 AND weekday = $2`,
     [courtId, isoWeekday(date)],
   );
-  if (!range) return [];
+  if (!range) return { slots: [], booked: [] };
 
   const dayStart = slotStart(date, 0);
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-  const booked = await db.query<{ starts_at: Date }>(
+  const reserved = await db.query<{ starts_at: Date }>(
     `SELECT starts_at FROM bookings WHERE court_id = $1 AND starts_at >= $2 AND starts_at < $3`,
     [courtId, dayStart, dayEnd],
   );
-  const taken = new Set(booked.map((b) => toArgentina(b.starts_at).hour));
+  const taken = new Set(reserved.map((b) => toArgentina(b.starts_at).hour));
 
   const slots: Slot[] = [];
+  const booked: Slot[] = [];
   for (let hour = range.start_hour; hour < range.end_hour; hour++) {
     const start = slotStart(date, hour);
-    if (taken.has(hour) || !isBookableStart(start, now)) continue;
-    slots.push({ startsAt: start.toISOString(), time: formatHour(hour) });
+    if (!isBookableStart(start, now)) continue;
+    (taken.has(hour) ? booked : slots).push({ startsAt: start.toISOString(), time: formatHour(hour) });
   }
-  return slots;
+  return { slots, booked };
 }

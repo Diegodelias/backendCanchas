@@ -10,12 +10,13 @@ import {
   patchCourtBody,
   updateCourt,
 } from '../clubs/courts.js';
-import { listClubBookings } from '../bookings/bookings.js';
+import { deleteBooking, listClubBookings } from '../bookings/bookings.js';
 import { getSchedule, replaceSchedule, requireCourt, scheduleBody } from '../bookings/schedules.js';
 import { requireSuperadmin } from './guard.js';
 
 const clubParam = z.object({ clubId: z.string().min(1).max(100) });
 const courtParams = z.object({ clubId: z.string().min(1).max(100), courtId: z.string().min(1).max(100) });
+const bookingParams = z.object({ clubId: z.string().min(1).max(100), bookingId: z.string().min(1).max(100) });
 
 /**
  * Las canchas de cualquier club, con exactamente las mismas reglas que la gestión del admin de club
@@ -69,6 +70,16 @@ export async function platformCourtsRoutes(app: FastifyInstance, deps: AppDeps) 
     const club = await requireClub(clubId);
     reply.header('Cache-Control', 'no-store');
     return { club, bookings: await listClubBookings(db, clubId) };
+  });
+
+  // DELETE /api/platform/clubs/:clubId/bookings/:bookingId -> 204. Elimina de forma definitiva una reserva de ese club;
+  // 404 si el club no existe o la reserva no existe o es de otro club.
+  app.delete('/platform/clubs/:clubId/bookings/:bookingId', async (req, reply) => {
+    await requireSuperadmin(db, req, now());
+    const { clubId, bookingId } = bookingParams.parse(req.params);
+    await requireClub(clubId);
+    await deleteBooking(db, bookingId, clubId);
+    return reply.status(204).send();
   });
 
   // GET /api/platform/clubs/:clubId/courts/:courtId/schedule -> { days }; 404 si la cancha no es de ese club o está borrada.
