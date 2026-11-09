@@ -1,10 +1,11 @@
-import { copyFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createPgDatabase, type Database } from '../src/db/client.js';
 import { runMigrations } from '../src/db/migrate.js';
-import { DEMO_RECORDINGS, DEMO_VIDEO_FILE, DemoLoadError, loadDemoRecordings } from '../src/modules/recordings/demo.js';
+import { DEMO_CLIPS, DEMO_RECORDINGS, DemoLoadError, loadDemoRecordings } from '../src/modules/recordings/demo.js';
+import { VIDEO_FILE_PATTERN } from '../src/modules/recordings/videos.js';
 import { requireTestDatabaseUrl } from './helpers.js';
 
 interface Row {
@@ -31,7 +32,7 @@ describe('comando de grabaciones de demostración', () => {
     base = mkdtempSync(path.join(tmpdir(), 'canchas3-demo-'));
     videos = path.join(base, 'videos');
     mkdirSync(videos);
-    writeFileSync(path.join(videos, DEMO_VIDEO_FILE), 'video de prueba');
+    for (const clip of Object.values(DEMO_CLIPS)) writeFileSync(path.join(videos, clip.file), 'video de prueba');
   });
   afterAll(async () => {
     await db?.close();
@@ -64,14 +65,41 @@ describe('comando de grabaciones de demostración', () => {
     expect([...all.values()].every((r) => r.starts_at < NOW)).toBe(true); // ninguna empieza en el futuro
   });
 
-  it('respeta los estados de ejemplo: disponibles con video, una en proceso y una sin cámara sin video', async () => {
+  it('respeta los estados de ejemplo: disponibles con su clip, una en proceso y una sin cámara sin video', async () => {
     await loadDemoRecordings(db, videos, NOW);
     const all = await byId();
-    expect(all.get('match-en-f5-1900')).toMatchObject({ status: 'available', video_file: DEMO_VIDEO_FILE, duration_seconds: 60 });
-    expect(all.get('match-en-f7-2000')).toMatchObject({ status: 'processing', video_file: null });
-    expect(all.get('match-an-f5-1900')).toMatchObject({ status: 'unavailable', video_file: null });
+    expect(all.get('match-en-f5-1900')).toMatchObject({ status: 'available', video_file: DEMO_CLIPS['exterior-1'].file });
+    expect(all.get('match-en-f7-2000')).toMatchObject({ status: 'processing', video_file: null, duration_seconds: 0 });
+    expect(all.get('match-an-f5-1900')).toMatchObject({ status: 'unavailable', video_file: null, duration_seconds: 0 });
     const statuses = (await rows()).filter((r) => !r.id.includes('-d')).map((r) => r.status).sort();
     expect(statuses).toEqual(['available', 'available', 'available', 'available', 'available', 'processing', 'unavailable']);
+  });
+
+  it('cada cancha usa su clip, siempre el mismo en los 3 días, y las dos cubiertas comparten el de cancha cubierta', async () => {
+    await loadDemoRecordings(db, videos, NOW);
+    const available = (await rows()).filter((r) => r.status === 'available');
+    expect(available).toHaveLength(15);
+
+    const clipByCourt = new Map<string, Set<string | null>>();
+    for (const r of available) clipByCourt.set(r.court_id, (clipByCourt.get(r.court_id) ?? new Set()).add(r.video_file));
+    // Un solo clip por cancha, en todos sus horarios y días.
+    for (const [court, clips] of clipByCourt) expect(clips.size, court).toBe(1);
+
+    const clipOf = (court: string) => [...clipByCourt.get(court)!][0];
+    expect(clipOf('en-f5-1')).toBe('demo-exterior-1.mp4');
+    expect(clipOf('tc-f5-1')).toBe('demo-exterior-2.mp4');
+    expect(clipOf('lc-f5-a')).toBe('demo-cubierta.mp4');
+    expect(clipOf('pb-f5-1')).toBe('demo-cubierta.mp4');
+  });
+
+  it('guarda la duración real de cada clip y no un valor fijo', async () => {
+    await loadDemoRecordings(db, videos, NOW);
+    const all = await byId();
+    expect(all.get('match-en-f5-1900')!.duration_seconds).toBe(643);
+    expect(all.get('match-en-f5-1800-d3')!.duration_seconds).toBe(643);
+    expect(all.get('match-tc-f5-1800-d2')!.duration_seconds).toBe(792);
+    expect(all.get('match-lc-f5-1900')!.duration_seconds).toBe(813);
+    expect(all.get('match-pb-f5-1730-d3')!.duration_seconds).toBe(813);
   });
 
   it('volver a correrlo renueva las fechas sin duplicar nada', async () => {
@@ -85,12 +113,24 @@ describe('comando de grabaciones de demostración', () => {
     expect((await byId()).get('match-en-f5-1900')!.starts_at.toISOString()).toBe('2026-03-11T22:00:00.000Z');
   });
 
-  it('sin el archivo de demostración avisa qué falta y no carga nada', async () => {
+  it('si falta algún clip avisa cuáles faltan, todos juntos, y no carga ni borra nada', async () => {
     const empty = path.join(base, 'vacia');
     mkdirSync(empty);
     await expect(loadDemoRecordings(db, empty, NOW)).rejects.toThrow(DemoLoadError);
-    await expect(loadDemoRecordings(db, empty, NOW)).rejects.toThrow(/demo-partido\.mp4/);
+    const error = await loadDemoRecordings(db, empty, NOW).catch((e: Error) => e);
+    for (const clip of Object.values(DEMO_CLIPS)) expect((error as Error).message).toContain(clip.file);
     expect(await rows()).toHaveLength(0);
+
+    // Con uno solo de los tres faltando, avisa solo ese y deja intactas las grabaciones ya cargadas.
+    await loadDemoRecordings(db, videos, NOW);
+    const partial = path.join(base, 'parcial');
+    mkdirSync(partial);
+    for (const clip of [DEMO_CLIPS['exterior-1'], DEMO_CLIPS['exterior-2']]) writeFileSync(path.join(partial, clip.file), 'x');
+    const before = (await rows()).length;
+    const err = await loadDemoRecordings(db, partial, NOW).catch((e: Error) => e);
+    expect((err as Error).message).toContain('demo-cubierta.mp4');
+    expect((err as Error).message).not.toContain('demo-exterior');
+    expect(await rows()).toHaveLength(before);
   });
 
   it('omite con aviso una cancha de demostración que no existe', async () => {
@@ -112,8 +152,9 @@ describe('comando de grabaciones de demostración', () => {
     expect(all.has('match-en-f5-1900')).toBe(false);
   });
 
-  it('el archivo de demostración del repositorio existe', () => {
-    const repoVideo = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '../videos', DEMO_VIDEO_FILE);
-    expect(() => copyFileSync(repoVideo, path.join(base, 'copia.mp4'))).not.toThrow();
+  it('los nombres de los clips cumplen el formato que exige la base y son distintos entre sí', () => {
+    const files = Object.values(DEMO_CLIPS).map((clip) => clip.file);
+    for (const file of files) expect(VIDEO_FILE_PATTERN.test(file), file).toBe(true);
+    expect(new Set(files).size).toBe(files.length);
   });
 });

@@ -271,7 +271,7 @@ Las grabaciones de partidos son **registros reales de la base** (tabla `recordin
 
 ### Cargar las grabaciones de demostración
 
-Un comando crea (o renueva) 7 grabaciones de ejemplo en cada uno de los **3 días anteriores a hoy** (hora de Argentina), con los ids de siempre para ayer (`match-en-f5-1900`, …) y sufijo `-d2` / `-d3` para los otros. Es **idempotente**: se puede volver a correr cuando las fechas queden viejas y no duplica nada. **No corre solo** al arrancar la API.
+Un comando crea (o renueva) 7 grabaciones de ejemplo en cada uno de los **3 días anteriores a hoy** (hora de Argentina), con los ids de siempre para ayer (`match-en-f5-1900`, …) y sufijo `-d2` / `-d3` para los otros. Cada cancha usa su **propio clip** de video (siempre el mismo en todos sus horarios y días), con la duración real del clip. Es **idempotente**: se puede volver a correr cuando las fechas queden viejas y no duplica nada. **No corre solo** al arrancar la API.
 
 ```bash
 # Desarrollo local (lee DATABASE_URL y VIDEOS_DIR del .env)
@@ -281,9 +281,22 @@ npm run cargar-grabaciones-demo
 docker compose exec api node dist/cli/cargar-grabaciones-demo.js
 ```
 
-> **El video de demostración no está en el repositorio** (`videos/` pesa 5,5 MB y no se versiona). Quien clone el backend tiene que copiar a mano un mp4 como `backend/videos/demo-partido.mp4` (de ~10 segundos, H.264 + AAC) antes de cargar las grabaciones de demostración o probar las descargas de fragmentos.
+| Cancha | Clip (en `backend/videos`) | Duración |
+|---|---|---|
+| Estación Norte, Cancha 1 · Fútbol 5 (19:00 y 18:00) | `demo-exterior-1.mp4` | 643 s |
+| Terraza Colegiales, Fútbol 5 Terraza | `demo-exterior-2.mp4` | 792 s |
+| La Cantera, Fútbol 5 Techada | `demo-cubierta.mp4` | 813 s |
+| Polideportivo Belgrano, Fútbol 5 Cubierta | `demo-cubierta.mp4` (se repite) | 813 s |
 
-Si falta `videos/demo-partido.mp4` no carga nada y lo avisa; una cancha de ejemplo que no existe se omite con un aviso, y nunca pisa una grabación real que ocupe el mismo turno.
+> **Los clips de demostración no están en el repositorio** (`videos/` está en `.gitignore`: son tres videos de 10 a 13 minutos, unos 285 MB). Quien clone el backend tiene que prepararlos a mano en `backend/videos/` antes de cargar las grabaciones de demostración o probar «guardar jugada». Cada uno es un mp4 H.264 + AAC; conviene reempaquetarlo con el índice al principio (`faststart`, sin recodificar, tarda segundos) para que el navegador arranque rápido:
+>
+> ```bash
+> ffmpeg -i <origen>.mp4 -c copy -movflags +faststart backend/videos/demo-exterior-1.mp4
+> ```
+>
+> El nombre tiene que cumplir `^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$` (sin espacios ni paréntesis). Los clips y sus duraciones están en `DEMO_CLIPS` (`src/modules/recordings/demo.ts`): si se reemplaza un clip por otro hay que actualizar su duración ahí (se usa solo para mostrarla antes de que el video cargue).
+
+Si falta algún clip no carga nada y avisa **cuáles** faltan; una cancha de ejemplo que no existe se omite con un aviso, y nunca pisa una grabación real que ocupe el mismo turno. `videos/demo-partido.mp4` ya no se usa.
 
 ### Pendiente: almacenamiento de grabaciones reales
 

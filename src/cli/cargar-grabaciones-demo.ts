@@ -1,6 +1,6 @@
 /**
- * Carga o renueva las grabaciones de demostración (los 3 días anteriores a hoy) usando el video de demostración de
- * VIDEOS_DIR. Se puede volver a correr cuando las fechas queden viejas. NO corre solo al arrancar la API.
+ * Carga o renueva las grabaciones de demostración (los 3 días anteriores a hoy) usando los clips de demostración de
+ * VIDEOS_DIR (uno por cancha). Se puede volver a correr cuando las fechas queden viejas. NO corre solo al arrancar la API.
  *
  *   npm run cargar-grabaciones-demo
  *   docker compose exec api node dist/cli/cargar-grabaciones-demo.js
