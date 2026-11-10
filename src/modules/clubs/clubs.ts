@@ -114,6 +114,44 @@ export async function createClub(db: Database, input: NewClub): Promise<Club> {
   }
 }
 
+/** Resultado de `deleteClub`: se borró, no existe o tiene reservas o grabaciones (y no se tocó nada). */
+export type DeleteClubResult =
+  | { status: 'deleted' }
+  | { status: 'not_found' }
+  | { status: 'not_empty'; bookings: number; recordings: number };
+
+/**
+ * Elimina un club de forma definitiva, con sus admins, canchas y horarios, solo si no tiene reservas ni grabaciones.
+ * Es una única sentencia: cuenta y borra juntos, así que no queda un club sin admins si algo falla a la mitad.
+ */
+export async function deleteClub(db: Database, id: string): Promise<DeleteClubResult> {
+  const [row] = await db.query<{ bookings: number; recordings: number; existed: boolean; deleted: number }>(
+    `WITH counts AS (
+       SELECT
+         (SELECT count(*)::int FROM bookings b JOIN courts k ON k.id = b.court_id WHERE k.club_id = $1) AS bookings,
+         (SELECT count(*)::int FROM recordings r JOIN courts k ON k.id = r.court_id WHERE k.club_id = $1) AS recordings
+     ),
+     removed_admins AS (
+       DELETE FROM users
+       WHERE club_id = $1 AND role = 'club_admin' AND (SELECT bookings + recordings FROM counts) = 0
+       RETURNING 1
+     ),
+     removed_club AS (
+       DELETE FROM clubs WHERE id = $1 AND (SELECT bookings + recordings FROM counts) = 0
+       RETURNING id
+     )
+     SELECT (SELECT bookings FROM counts) AS bookings,
+            (SELECT recordings FROM counts) AS recordings,
+            EXISTS (SELECT 1 FROM clubs WHERE id = $1) AS existed,
+            (SELECT count(*)::int FROM removed_club) AS deleted`,
+    [id],
+  );
+  if (!row) return { status: 'not_found' };
+  if (row.deleted > 0) return { status: 'deleted' };
+  if (!row.existed) return { status: 'not_found' };
+  return { status: 'not_empty', bookings: row.bookings, recordings: row.recordings };
+}
+
 /** Qué se puede cambiar de un club. El identificador nunca. */
 export interface ClubPatch extends Partial<ClubFields> {
   active?: boolean;

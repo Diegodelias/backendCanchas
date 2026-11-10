@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AppDeps } from '../../app.js';
 import type { Database } from '../../db/client.js';
 import { AppError, badRequest, notFound } from '../../lib/errors.js';
-import { ClubInputError, createClub, updateClub } from '../clubs/clubs.js';
+import { ClubInputError, createClub, deleteClub, updateClub } from '../clubs/clubs.js';
 import { requireSuperadmin } from './guard.js';
 
 /** Clubes por página de la lista de la plataforma, y el máximo que se acepta. */
@@ -136,6 +136,27 @@ export async function platformClubsRoutes(app: FastifyInstance, deps: AppDeps) {
     } catch (err) {
       return clubInputToHttp(err);
     }
+  });
+
+  // DELETE /api/platform/clubs/:id -> 204. Definitivo; solo si el club no tiene reservas ni grabaciones (409 si las tiene).
+  app.delete('/platform/clubs/:id', async (req, reply) => {
+    await requireSuperadmin(db, req, now());
+    const { id } = idParam.parse(req.params);
+
+    const result = await deleteClub(db, id);
+    if (result.status === 'not_found') throw notFound('No encontramos ese club.');
+    if (result.status === 'not_empty') {
+      const parts = [
+        result.bookings > 0 ? `${result.bookings} ${result.bookings === 1 ? 'reserva' : 'reservas'}` : null,
+        result.recordings > 0 ? `${result.recordings} ${result.recordings === 1 ? 'grabación' : 'grabaciones'}` : null,
+      ].filter(Boolean);
+      throw new AppError(
+        409,
+        'club_not_empty',
+        `El club tiene ${parts.join(' y ')}, así que no se puede eliminar. Desactivalo para ocultarlo del sitio.`,
+      );
+    }
+    return reply.status(204).send();
   });
 
   // PATCH /api/platform/clubs/:id -> 200 { club }. Cambia datos y estado; el identificador no se cambia nunca.

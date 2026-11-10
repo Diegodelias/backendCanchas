@@ -279,12 +279,117 @@ describe('plataforma: clubes', () => {
       expect(res.statusCode).toBe(404);
     });
 
-    it('no hay forma de borrar un club', async () => {
+    it('desactivar un club no lo elimina: sigue existiendo y se puede reactivar', async () => {
       const sa = await loginSuperadmin();
       const club = await createClub('test-sin-borrar');
-      const res = await call('DELETE', `/api/platform/clubs/${club}`, sa);
-      expect(res.statusCode).toBe(404);
+      expect((await call('PATCH', `/api/platform/clubs/${club}`, sa, { active: false })).statusCode).toBe(200);
       expect(await env.db.query(`SELECT 1 FROM clubs WHERE id = $1`, [club])).toHaveLength(1);
+      const res = await call('PATCH', `/api/platform/clubs/${club}`, sa, { active: true });
+      expect(body(res).club).toMatchObject({ id: club, active: true });
+    });
+  });
+
+  describe('eliminar un club', () => {
+    const count = async (sql: string, params: unknown[]) =>
+      Number((await env.db.query<{ n: string }>(sql, params))[0]!.n);
+
+    async function addBooking(courtId: string) {
+      await env.db.query(
+        `INSERT INTO bookings (id, court_id, starts_at, price, name, email, created_ip)
+         VALUES (gen_random_uuid()::text, $1, '2030-01-07T20:00:00-03:00', 1000, 'Ana', 'ana@mail.example', '1.1.1.1')`,
+        [courtId],
+      );
+    }
+    async function addRecording(courtId: string) {
+      await env.db.query(
+        `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds)
+         VALUES (gen_random_uuid()::text, $1, '2030-01-07T17:30:00-03:00', 'available', 'demo.mp4', 60)`,
+        [courtId],
+      );
+    }
+
+    it('elimina un club con canchas y admins, sin reservas ni grabaciones, y deja el resto igual', async () => {
+      const sa = await loginSuperadmin();
+      const club = await createClub('test-borrar', 'Club Borrar');
+      const court = await createCourt(club, 'Cancha 1');
+      const borrada = await createCourt(club, 'Cancha 2');
+      await env.db.query(`UPDATE courts SET deleted_at = now() WHERE id = $1`, [borrada]);
+      await env.db.query(`INSERT INTO court_schedules (court_id, weekday, start_hour, end_hour) VALUES ($1, 1, 10, 22)`, [court]);
+      await loginAdmin(club, 'a@borrar.example');
+      await env.db.query(`INSERT INTO users (email, name, role, club_id) VALUES ('inv@borrar.example', 'Inv', 'club_admin', $1)`, [club]);
+      const otro = await createClub('test-otro', 'Club Otro');
+      await createCourt(otro, 'Cancha X');
+      await loginAdmin(otro, 'a@otro.example');
+
+      const res = await call('DELETE', `/api/platform/clubs/${club}`, sa);
+      expect(res.statusCode).toBe(204);
+      expect(await count(`SELECT count(*) AS n FROM clubs WHERE id = $1`, [club])).toBe(0);
+      expect(await count(`SELECT count(*) AS n FROM courts WHERE club_id = $1`, [club])).toBe(0);
+      expect(await count(`SELECT count(*) AS n FROM court_schedules WHERE court_id = $1`, [court])).toBe(0);
+      expect(await count(`SELECT count(*) AS n FROM users WHERE club_id = $1`, [club])).toBe(0);
+      // El admin eliminado ya no puede iniciar sesión.
+      const login = await env.app.inject({ method: 'POST', url: '/api/auth/admin/login', payload: { email: 'a@borrar.example', password: PASSWORD } });
+      expect(login.statusCode).toBe(401);
+      expect((await listClubs(sa, '?limit=50')).clubs.map((c: ClubSummary) => c.id)).not.toContain(club);
+      expect(await publicIds()).not.toContain(club);
+
+      // Los demás clubes quedan intactos.
+      expect(await count(`SELECT count(*) AS n FROM courts WHERE club_id = $1`, [otro])).toBe(1);
+      expect(await count(`SELECT count(*) AS n FROM users WHERE club_id = $1`, [otro])).toBe(1);
+    });
+
+    it('elimina un club activo sin pedir que se desactive antes', async () => {
+      const sa = await loginSuperadmin();
+      const club = await createClub('test-activo');
+      expect((await listClubs(sa, '?limit=50')).clubs.find((c: ClubSummary) => c.id === club).active).toBe(true);
+      expect((await call('DELETE', `/api/platform/clubs/${club}`, sa)).statusCode).toBe(204);
+    });
+
+    it('rechaza con 409 y los conteos si tiene reservas o grabaciones, y no cambia nada', async () => {
+      const sa = await loginSuperadmin();
+      const club = await createClub('test-datos');
+      const court = await createCourt(club, 'Cancha 1');
+      await loginAdmin(club, 'a@datos.example');
+      await addBooking(court);
+      await addRecording(court);
+
+      const res = await call('DELETE', `/api/platform/clubs/${club}`, sa);
+      expect(res.statusCode).toBe(409);
+      expect(body(res).error.code).toBe('club_not_empty');
+      expect(body(res).error.message).toContain('1 reserva y 1 grabación');
+      expect(await count(`SELECT count(*) AS n FROM clubs WHERE id = $1`, [club])).toBe(1);
+      expect(await count(`SELECT count(*) AS n FROM courts WHERE club_id = $1`, [club])).toBe(1);
+      expect(await count(`SELECT count(*) AS n FROM users WHERE club_id = $1`, [club])).toBe(1);
+      expect(await count(`SELECT count(*) AS n FROM bookings WHERE court_id = $1`, [court])).toBe(1);
+      expect(await count(`SELECT count(*) AS n FROM recordings WHERE court_id = $1`, [court])).toBe(1);
+    });
+
+    it('responde 404 si el club no existe o ya se eliminó', async () => {
+      const sa = await loginSuperadmin();
+      const club = await createClub('test-dos-veces');
+      expect((await call('DELETE', `/api/platform/clubs/${club}`, sa)).statusCode).toBe(204);
+      expect((await call('DELETE', `/api/platform/clubs/${club}`, sa)).statusCode).toBe(404);
+      expect((await call('DELETE', '/api/platform/clubs/no-existe', sa)).statusCode).toBe(404);
+    });
+
+    it('deja libre el identificador: se puede crear otro club con el mismo', async () => {
+      const sa = await loginSuperadmin();
+      const club = await createClub('test-reuso');
+      expect((await call('DELETE', `/api/platform/clubs/${club}`, sa)).statusCode).toBe(204);
+      const res = await call('POST', '/api/platform/clubs', sa, { id: club, name: 'Nuevo', zone: 'Z', city: 'buenos-aires', address: 'D' });
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('solo el superadmin puede eliminar: admin de club y jugador reciben 403, sin sesión 401', async () => {
+      const club = await createClub('test-permisos');
+      const admin = await loginAdmin(club);
+      const player = await loginPlayer();
+      expect((await call('DELETE', `/api/platform/clubs/${club}`, admin)).statusCode).toBe(403);
+      expect((await call('DELETE', '/api/platform/clubs/estacion-norte', admin)).statusCode).toBe(403);
+      expect((await call('DELETE', `/api/platform/clubs/${club}`, player)).statusCode).toBe(403);
+      expect((await call('DELETE', `/api/platform/clubs/${club}`)).statusCode).toBe(401);
+      expect(await count(`SELECT count(*) AS n FROM clubs WHERE id = $1`, [club])).toBe(1);
+      expect(await count(`SELECT count(*) AS n FROM users WHERE club_id = $1`, [club])).toBe(1);
     });
   });
 
