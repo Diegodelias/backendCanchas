@@ -134,9 +134,11 @@ describe('jugadas del jugador', () => {
       const patch = await call('PATCH', `/api/plays/${play.id}`, bruno, { title: 'Robada' });
       const del = await call('DELETE', `/api/plays/${play.id}`, bruno);
       const missing = await call('DELETE', '/api/plays/00000000-0000-4000-8000-000000000000', bruno);
+      const clip = await call('GET', `/api/plays/${play.id}/clip`, bruno);
 
       expect(patch.statusCode).toBe(404);
       expect(del.statusCode).toBe(404);
+      expect(clip.statusCode).toBe(404);
       expect(body(patch)).toEqual(body(missing));
       const mine = body(await call('GET', '/api/plays', ana)).plays;
       expect(mine).toHaveLength(1);
@@ -172,6 +174,43 @@ describe('jugadas del jugador', () => {
       expect(list.statusCode).toBe(403);
       expect(JSON.stringify(body(list))).not.toContain('Gol de chilena');
       expect((await create(admin)).statusCode).toBe(403);
+    });
+  });
+
+  describe('ver una jugada con su link', () => {
+    it('sin sesión devuelve la jugada con su grabación y sin datos del dueño', async () => {
+      const ana = await loginPlayer(ANA);
+      const { play } = body(await create(ana));
+      const [owner] = await env.db.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [ANA]);
+
+      const res = await call('GET', `/api/plays/${play.id}`);
+
+      expect(res.statusCode).toBe(200);
+      expect(body(res).play).toMatchObject({ id: play.id, title: 'Gol de chilena', timestamp: 19 });
+      expect(body(res).play).toHaveProperty('recording');
+      expect(res.body).not.toContain(ANA);
+      expect(res.body).not.toContain(owner.id);
+    });
+
+    it('otro jugador la ve, pero no puede cambiarla ni borrarla', async () => {
+      const ana = await loginPlayer(ANA);
+      const bruno = await loginPlayer(BRUNO);
+      const { play } = body(await create(ana));
+
+      expect((await call('GET', `/api/plays/${play.id}`, bruno)).statusCode).toBe(200);
+      expect((await call('PATCH', `/api/plays/${play.id}`, bruno, { title: 'Robada' })).statusCode).toBe(404);
+      expect((await call('DELETE', `/api/plays/${play.id}`, bruno)).statusCode).toBe(404);
+      expect(body(await call('GET', '/api/plays', bruno))).toEqual({ plays: [] });
+    });
+
+    it('una jugada inexistente, borrada o con un id mal formado responde 404', async () => {
+      const ana = await loginPlayer(ANA);
+      const { play } = body(await create(ana));
+      await call('DELETE', `/api/plays/${play.id}`, ana);
+
+      expect((await call('GET', `/api/plays/${play.id}`)).statusCode).toBe(404);
+      expect((await call('GET', '/api/plays/00000000-0000-4000-8000-000000000000')).statusCode).toBe(404);
+      expect((await call('GET', '/api/plays/no-es-uuid')).statusCode).toBe(404);
     });
   });
 

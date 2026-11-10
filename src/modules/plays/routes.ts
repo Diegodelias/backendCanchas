@@ -253,6 +253,16 @@ export async function playsRoutes(app: FastifyInstance, deps: AppDeps) {
     return reply.status(201).send({ play });
   });
 
+  // GET /api/plays/:id -> 200 { play }. Sin sesión y de cualquier jugada: es lo que abre el link que se comparte
+  // (el uuid no se puede adivinar). No devuelve datos del dueño. 404 si no existe o el id no es un uuid.
+  app.get('/plays/:id', async (req) => {
+    const id = parseId(req.params);
+    const rows = await db.query<PlayRow>(`SELECT ${COLUMNS} FROM plays WHERE id = $1`, [id]);
+    if (!rows[0]) throw notFound('No encontramos esa jugada.');
+    const [play] = await withRecordings([rows[0]]);
+    return { play };
+  });
+
   // PATCH /api/plays/:id -> 200 { play }; 404 si no existe o es de otro jugador.
   app.patch('/plays/:id', async (req) => {
     const user = await requirePlayer(req);
