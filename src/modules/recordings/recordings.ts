@@ -107,10 +107,13 @@ export async function getVisibleRecordings(db: Database, ids: string[]): Promise
   return new Map(rows.map((row) => [row.id, toRecording(row)]));
 }
 
-/** Todas las grabaciones de las canchas de un club (cualquier estado), de la más reciente a la más antigua. */
+/**
+ * Todas las grabaciones reales de las canchas de un club (cualquier estado), de la más reciente a la más antigua.
+ * Las de demostración (`is_demo`) no se incluyen: el panel del admin muestra solo datos reales.
+ */
 export async function listClubRecordings(db: Database, clubId: string): Promise<RecordingItem[]> {
   const rows = await db.query<RecordingRow>(
-    `${SELECT} WHERE c.id = $1 AND k.deleted_at IS NULL ${ORDER}`,
+    `${SELECT} WHERE c.id = $1 AND k.deleted_at IS NULL AND NOT r.is_demo ${ORDER}`,
     [clubId],
   );
   return rows.map(toRecording);

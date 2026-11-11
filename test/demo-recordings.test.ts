@@ -65,6 +65,19 @@ describe('comando de grabaciones de demostración', () => {
     expect([...all.values()].every((r) => r.starts_at < NOW)).toBe(true); // ninguna empieza en el futuro
   });
 
+  it('marca todas las grabaciones que carga como de demostración, también al volver a correr el comando', async () => {
+    const isDemo = () => db.query<{ is_demo: boolean }>(`SELECT is_demo FROM recordings`);
+    await loadDemoRecordings(db, videos, NOW);
+    let marks = await isDemo();
+    expect(marks).toHaveLength(21);
+    expect(marks.every((r) => r.is_demo)).toBe(true);
+
+    await loadDemoRecordings(db, videos, new Date('2026-03-12T12:00:00Z')); // días después: renueva las fechas
+    marks = await isDemo();
+    expect(marks).toHaveLength(21);
+    expect(marks.every((r) => r.is_demo)).toBe(true);
+  });
+
   it('respeta los estados de ejemplo: disponibles con su clip, una en proceso y una sin cámara sin video', async () => {
     await loadDemoRecordings(db, videos, NOW);
     const all = await byId();

@@ -111,8 +111,8 @@ export async function loadDemoRecordings(db: Database, videosDir: string, now: D
       const startsAt = new Date(slotStart(addDays(today, -daysBack), demo.hour).getTime() + demo.minute * 60 * 1000);
       const clip = demo.clip ? DEMO_CLIPS[demo.clip] : null;
       const rows = await db.query<{ id: string }>(
-        `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds, created_at, is_demo)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
          ON CONFLICT (court_id, starts_at) DO NOTHING
          RETURNING id`,
         [idForDay(demo.id, daysBack), demo.courtId, startsAt, demo.status, clip?.file ?? null, clip?.durationSeconds ?? 0, now],

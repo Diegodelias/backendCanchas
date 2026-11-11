@@ -170,6 +170,31 @@ describe('grabaciones: lectura', () => {
       expect(res.headers['cache-control']).toBe('no-store');
     });
 
+    it('el admin no ve las grabaciones de demostración de su club, pero el público sí las sigue viendo', async () => {
+      const real = await addRecording(court, '2026-03-01T17:00:00-03:00');
+      const demo = await addRecording(court, '2026-03-02T17:00:00-03:00');
+      const demoNoVideo = await addRecording(court2, '2026-03-03T18:00:00-03:00', 'processing');
+      await env.db.query(`UPDATE recordings SET is_demo = true WHERE id = ANY($1::text[])`, [[demo, demoNoVideo]]);
+
+      const admin = await kit.loginAdmin(club);
+      const res = await kit.call('GET', '/api/club/recordings', admin);
+      const recordings = kit.body(res).recordings as Rec[];
+      expect(recordings.map((r) => r.id)).toEqual([real]);
+      expect(recordings[0]).not.toHaveProperty('is_demo');
+      expect(recordings[0]).not.toHaveProperty('isDemo');
+
+      // El resto del sitio no cambia: la lista pública y la consulta por identificador siguen incluyendo la de demostración.
+      expect((await list()).items.map((r) => r.id)).toEqual([demo, real]);
+      expect((await kit.call('GET', `/api/recordings/${demo}`)).statusCode).toBe(200);
+    });
+
+    it('un club con solo grabaciones de demostración devuelve la lista vacía', async () => {
+      const demo = await addRecording(court, '2026-03-02T17:00:00-03:00');
+      await env.db.query(`UPDATE recordings SET is_demo = true WHERE id = $1`, [demo]);
+      const admin = await kit.loginAdmin(club);
+      expect(kit.body(await kit.call('GET', '/api/club/recordings', admin))).toEqual({ recordings: [] });
+    });
+
     it('un club sin grabaciones devuelve la lista vacía', async () => {
       const admin = await kit.loginAdmin(club);
       expect(kit.body(await kit.call('GET', '/api/club/recordings', admin))).toEqual({ recordings: [] });

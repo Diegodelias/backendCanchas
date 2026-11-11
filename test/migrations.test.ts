@@ -39,6 +39,7 @@ describe('migraciones', () => {
       '1763500000000_nombre-del-sitio',
       '1763600000000_color-del-logo',
       '1763700000000_cupo-de-jugadas',
+      '1763800000000_grabaciones-demo',
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -222,6 +223,56 @@ describe('migraciones', () => {
     expect(left!.n).toBe('0');
   });
 
+  it('las grabaciones existentes quedan marcadas como de demostración, las nuevas no, y se puede bajar', async () => {
+    await db.query('DROP SCHEMA public CASCADE');
+    await db.query('CREATE SCHEMA public');
+    const partial = mkdtempSync(path.join(tmpdir(), 'canchas3-migr-demo-'));
+    try {
+      for (const f of readdirSync(MIGRATIONS_DIR)) {
+        if (f < '1763800000000_') copyFileSync(path.join(MIGRATIONS_DIR, f), path.join(partial, f));
+      }
+      await runMigrations(url, { dir: partial });
+      await db.query(`INSERT INTO clubs (id, name, zone, city, address) VALUES ('test-demo', 'D', 'Z', 'buenos-aires', 'D')`);
+      await db.query(`INSERT INTO courts (id, club_id, name, sport, price) VALUES ('test-demo-c1', 'test-demo', 'Cancha', 'Fútbol 5', 1000)`);
+      await db.query(
+        `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds)
+         VALUES ('vieja', 'test-demo-c1', '2030-01-07T17:00:00-03:00', 'available', 'demo-partido.mp4', 60)`,
+      );
+    } finally {
+      rmSync(partial, { recursive: true, force: true });
+    }
+
+    expect(await runMigrations(url)).toEqual(['1763800000000_grabaciones-demo']);
+    await db.query(
+      `INSERT INTO recordings (id, court_id, starts_at, status, video_file, duration_seconds)
+       VALUES ('nueva', 'test-demo-c1', '2030-01-08T17:00:00-03:00', 'processing', NULL, 0)`,
+    );
+    expect(await db.query(`SELECT id, is_demo FROM recordings ORDER BY id`)).toEqual([
+      { id: 'nueva', is_demo: false },
+      { id: 'vieja', is_demo: true },
+    ]);
+
+    // Bajarla elimina la columna y conserva las grabaciones.
+    const { runner } = await import('node-pg-migrate');
+    await runner({
+      databaseUrl: url,
+      dir: MIGRATIONS_DIR,
+      direction: 'down',
+      count: 1,
+      migrationsTable: 'pgmigrations',
+      checkOrder: true,
+      singleTransaction: true,
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    });
+    const cols = await db.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'recordings'`,
+    );
+    expect(cols.map((c) => c.column_name)).not.toContain('is_demo');
+    expect(await db.query(`SELECT 1 FROM recordings`)).toHaveLength(2);
+    await runMigrations(url);
+    await db.query(`DELETE FROM clubs WHERE id = 'test-demo'`); // arrastra canchas y grabaciones
+  });
+
   it('los checks de clubes y canchas rechazan datos inválidos', async () => {
     const club = (id: string) =>
       db.query(`INSERT INTO clubs (id, name, zone, city, address) VALUES ($1, 'N', 'Z', 'buenos-aires', 'D')`, [id]);
@@ -372,6 +423,7 @@ describe('migraciones', () => {
       '1763500000000_nombre-del-sitio',
       '1763600000000_color-del-logo',
       '1763700000000_cupo-de-jugadas',
+      '1763800000000_grabaciones-demo',
     ]);
     const clips = await db.query<{ id: string; clip_start_seconds: number | null; clip_end_seconds: number | null }>(
       `SELECT id, clip_start_seconds, clip_end_seconds FROM plays ORDER BY id`,
@@ -424,6 +476,7 @@ describe('migraciones', () => {
       '1763500000000_nombre-del-sitio',
       '1763600000000_color-del-logo',
       '1763700000000_cupo-de-jugadas',
+      '1763800000000_grabaciones-demo',
     ]);
     const [old] = await db.query<{ code_hash: string | null; code_attempts: number }>(
       `SELECT code_hash, code_attempts FROM login_tokens WHERE token_hash = 'hash-viejo'`,
@@ -437,13 +490,13 @@ describe('migraciones', () => {
       ),
     ).rejects.toThrow(/login_tokens_code_attempts_check/);
 
-    // Bajar las cuatro últimas (el cupo de jugadas, el color del logo, el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
+    // Bajar las cinco últimas (la marca de demostración, el cupo de jugadas, el color del logo, el nombre del sitio y el código de acceso): las columnas desaparecen y los links siguen.
     const { runner } = await import('node-pg-migrate');
     await runner({
       databaseUrl: url,
       dir: MIGRATIONS_DIR,
       direction: 'down',
-      count: 4,
+      count: 5,
       migrationsTable: 'pgmigrations',
       checkOrder: true,
       singleTransaction: true,
