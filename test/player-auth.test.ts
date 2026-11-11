@@ -237,7 +237,8 @@ describe('ingreso del jugador por link', () => {
       const token = await issueToken('futuro-admin@club.example');
       await createAdmin(env.db, { ...ADMIN, email: 'futuro-admin@club.example' });
       const res = await confirm(token);
-      expect(res.statusCode).toBe(410);
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('admin_account');
       expect(sessionCookie(res)).toBeUndefined();
       const users = await env.db.query<{ role: string }>('SELECT role FROM users');
       expect(users).toEqual([{ role: 'club_admin' }]);

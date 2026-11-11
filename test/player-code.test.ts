@@ -1,6 +1,6 @@
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createAdmin } from '../src/modules/auth/admins.js';
+import { createAdmin, createSuperadmin } from '../src/modules/auth/admins.js';
 import { hashCode } from '../src/modules/auth/links.js';
 import { SESSION_COOKIE } from '../src/modules/auth/sessions.js';
 import { createDbTestEnv, waitFor, type DbTestEnv } from './helpers.js';
@@ -209,12 +209,31 @@ describe('ingreso del jugador con el código del mail', () => {
       expect((await confirmCode(PLAYER, code)).statusCode).toBe(200);
     });
 
-    it('si el mail se volvió de un admin después de pedir el código, no abre sesión', async () => {
+    it('si el mail se volvió de un admin después de pedir el código, no abre sesión y lo dice explícitamente', async () => {
       const { code } = await issue(PLAYER);
       await createAdmin(env.db, { ...ADMIN, email: PLAYER });
       const res = await confirmCode(PLAYER, code);
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('admin_account');
+      expect(res.json().error.message).toContain('administrador');
       expect(sessionCookie(res)).toBeUndefined();
+    });
+
+    it('un superadmin que recibió el código y lo escribe bien recibe el mensaje explícito, no el genérico', async () => {
+      await createSuperadmin(env.db, { email: 'super@mail.example', name: 'Super', password: 'clave-de-prueba-123' });
+      const { code } = await issue('super@mail.example');
+      const res = await confirmCode('super@mail.example', code);
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('admin_account');
+      expect(sessionCookie(res)).toBeUndefined();
+    });
+
+    it('un código equivocado con el mail de un admin con pedido vigente sigue dando el error genérico', async () => {
+      await createSuperadmin(env.db, { email: 'super@mail.example', name: 'Super', password: 'clave-de-prueba-123' });
+      const { code } = await issue('super@mail.example');
+      const res = await confirmCode('super@mail.example', wrongCode(code));
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('invalid_code');
     });
   });
 

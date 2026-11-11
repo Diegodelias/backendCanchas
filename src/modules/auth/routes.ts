@@ -42,6 +42,14 @@ const confirmCodeBody = z.object({
 const INVALID_CODE = () =>
   new AppError(400, 'invalid_code', 'El código no es correcto o venció. Revisá el último mail o pedí uno nuevo.');
 
+/** Solo lo ve quien ya consumió un código o link vigente: demostró tener acceso a ese mail. */
+const ADMIN_ACCOUNT = () =>
+  new AppError(
+    403,
+    'admin_account',
+    'Este mail es de una cuenta de administrador y no puede ingresar como jugador. Ingresá desde el acceso de administrador.',
+  );
+
 const TOO_MANY_CODE_ATTEMPTS = () =>
   new AppError(429, 'too_many_code_attempts', 'Hubo demasiados intentos con el código. Pedí un código nuevo.');
 
@@ -185,7 +193,8 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
       [consumed.email],
     );
     // El mail se volvió de un admin después de pedir el link: no se abre sesión de jugador.
-    if (!user || user.role !== 'player') throw LINK_EXPIRED();
+    if (!user) throw LINK_EXPIRED();
+    if (user.role !== 'player') throw ADMIN_ACCOUNT();
 
     await deleteSession(db, req.cookies[SESSION_COOKIE]);
     const sessionToken = await createSession(db, user.id, user.role, at);
@@ -211,7 +220,8 @@ export async function authRoutes(app: FastifyInstance, deps: AppDeps) {
       [consumed.email],
     );
     // El mail se volvió de un admin después de pedir el código: no se abre sesión de jugador.
-    if (!user || user.role !== 'player') throw INVALID_CODE();
+    if (!user) throw INVALID_CODE();
+    if (user.role !== 'player') throw ADMIN_ACCOUNT();
 
     await deleteSession(db, req.cookies[SESSION_COOKIE]);
     const sessionToken = await createSession(db, user.id, user.role, at);
