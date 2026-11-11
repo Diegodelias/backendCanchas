@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { STOP_GRACE_MS } from '../src/modules/live/launcher.js';
 import {
   createFakeDatabase,
   createTestEnv,
@@ -177,6 +178,60 @@ describe('apagado del servidor', () => {
     a.req.destroy();
     current = null; // ya se cerró
   });
+
+  it('el apagado espera a que los procesos terminen de verdad, no solo a pedirles que se detengan', async () => {
+    const { env, base } = await setup();
+    let closedAt = 0;
+    env.launcher.onLaunch = (proc) => {
+      proc.emitBytes('datos');
+      // Un ffmpeg que tarda en cerrar la sesión con la cámara antes de salir.
+      proc.kill = () => {
+        proc.killed = true;
+        setTimeout(() => {
+          closedAt = Date.now();
+          proc.finish(null);
+        }, 200);
+      };
+    };
+    const a = await open(`${base}${STREAM}`);
+
+    await env.app.close();
+    const doneAt = Date.now();
+    expect(closedAt).toBeGreaterThan(0); // el proceso terminó antes de que el apagado devolviera
+    expect(doneAt).toBeGreaterThanOrEqual(closedAt);
+    a.req.destroy();
+    current = null;
+  });
+
+  it('un proceso que no cierra no cuelga el apagado más allá del tope', async () => {
+    const { env, base } = await setup();
+    env.launcher.onLaunch = (proc) => {
+      proc.emitBytes('datos');
+      proc.kill = () => {
+        proc.killed = true; // pide detenerse pero nunca cierra
+      };
+    };
+    const a = await open(`${base}${STREAM}`);
+
+    const start = Date.now();
+    const closing = env.app.close();
+    let finished = false;
+    void closing.then(() => (finished = true));
+
+    // Dentro del plazo del respaldo el apagado sigue esperando al proceso.
+    await sleep(STOP_GRACE_MS - 1000);
+    expect(finished).toBe(false);
+
+    // Pasado el tope el apagado ya no espera al proceso. Lo único que lo retiene es la respuesta de video abierta del
+    // cliente (este proceso falso nunca cierra su salida; en producción lo termina el respaldo forzado del lanzador):
+    // se la cierra y el apagado tiene que completarse. Si siguiera colgado del proceso, nunca terminaría.
+    await sleep(2000 + 800);
+    a.req.destroy();
+    await closing;
+    expect(Date.now() - start).toBeGreaterThanOrEqual(STOP_GRACE_MS);
+    expect(Date.now() - start).toBeLessThan(STOP_GRACE_MS + 3000);
+    current = null;
+  }, 15000);
 });
 
 describe('registros (logs)', () => {

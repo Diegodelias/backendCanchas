@@ -36,6 +36,11 @@ export class FakeProcess implements FfmpegProcess {
   readonly stderr = new PassThrough();
   killed = false;
   private readonly events = new EventEmitter();
+  private resolveClosed: () => void = () => {};
+  /** Se resuelve cuando el proceso cierra, igual que en el lanzador real. */
+  readonly closed = new Promise<void>((resolve) => {
+    this.resolveClosed = resolve;
+  });
 
   onClose(listener: (code: number | null) => void) {
     this.events.on('close', listener);
@@ -52,7 +57,10 @@ export class FakeProcess implements FfmpegProcess {
   finish(code: number | null) {
     this.stdout.end();
     this.stderr.end();
-    setImmediate(() => this.events.emit('close', code));
+    setImmediate(() => {
+      this.events.emit('close', code);
+      this.resolveClosed();
+    });
   }
   emitBytes(data: string | Buffer) {
     this.stdout.write(data);

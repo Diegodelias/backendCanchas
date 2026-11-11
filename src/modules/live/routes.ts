@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AppDeps } from '../../app.js';
 import { getLiveCamera } from '../../config.js';
 import { AppError, notFound } from '../../lib/errors.js';
-import { SpawnLauncher, type FfmpegLauncher, type FfmpegProcess } from './launcher.js';
+import { SpawnLauncher, STOP_GRACE_MS, type FfmpegLauncher, type FfmpegProcess } from './launcher.js';
 import { buildFfmpegArgs, buildRtspUrl, liveCameraLogInfo, sanitize } from './rtsp.js';
 import { ViewerCounter } from './viewers.js';
 
@@ -86,11 +86,21 @@ export async function liveRoutes(app: FastifyInstance, deps: AppDeps) {
   // Al apagar el servidor no puede quedar ningún ffmpeg corriendo. Se usa `preClose` (y no `onClose`)
   // porque el cierre espera a que terminen las conexiones, y un flujo de video no termina solo.
   app.addHook('preClose', async () => {
+    const stopped: Promise<void>[] = [];
     for (const [proc, metrics] of active) {
       metrics.finish('server_shutdown');
       proc.kill();
+      stopped.push(proc.closed);
     }
     active.clear();
+    // Se espera a que terminen para no dejar ninguno corriendo, pero con tope: el respaldo forzado del lanzador los
+    // termina a los `STOP_GRACE_MS`, y el apagado no puede depender de un proceso que no responde.
+    let timer: NodeJS.Timeout | undefined;
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, STOP_GRACE_MS + 500);
+    });
+    await Promise.race([Promise.all(stopped), limit]);
+    clearTimeout(timer);
   });
 
   app.get('/live/:cameraId/stream', async (req, reply) => {
