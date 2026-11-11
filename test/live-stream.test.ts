@@ -6,6 +6,7 @@ import {
   createFakeDatabase,
   createTestEnv,
   FakeLauncher,
+  type FakeProcess,
   listen,
   open,
   sleep,
@@ -440,5 +441,106 @@ describe('métricas por stream', () => {
     ]) {
       expect(all).not.toContain(secret);
     }
+  });
+
+  describe('lugar de espectador y tope de procesos', () => {
+    /** Un ffmpeg falso que, al detenerlo, tarda `ms` en cerrarse (o nunca, con `null`). */
+    function slowToClose(ms: number | null) {
+      return (proc: FakeProcess) => {
+        proc.emitBytes('video');
+        proc.kill = () => {
+          if (proc.killed) return;
+          proc.killed = true;
+          if (ms !== null) setTimeout(() => proc.finish(null), ms);
+        };
+      };
+    }
+
+    it('un cliente que se va y un pedido inmediato recibe video aunque el proceso anterior siga cerrándose', async () => {
+      const { base, launcher } = await setupWithLogs({ LIVE_MAX_VIEWERS: '1' });
+      launcher.onLaunch = slowToClose(500);
+
+      const first = await open(`${base}${STREAM}`);
+      expect(first.res.statusCode).toBe(200);
+      first.req.destroy();
+      await waitFor(() => launcher.launched[0]!.proc.killed);
+
+      // El proceso anterior todavía se está cerrando (500 ms), pero su lugar ya está libre.
+      const second = await open(`${base}${STREAM}`);
+      expect(second.res.statusCode).toBe(200);
+      expect(launcher.launched).toHaveLength(2);
+      second.req.destroy();
+      await launcher.launched[0]!.proc.closed;
+      launcher.launched[1]!.proc.finish(null);
+    });
+
+    it('el lugar no se libera dos veces: al terminar de cerrarse el proceso anterior no se admiten más espectadores', async () => {
+      const { base, launcher } = await setupWithLogs({ LIVE_MAX_VIEWERS: '1' });
+      launcher.onLaunch = slowToClose(300);
+
+      const first = await open(`${base}${STREAM}`);
+      first.req.destroy();
+      await waitFor(() => launcher.launched[0]!.proc.killed);
+      const second = await open(`${base}${STREAM}`); // ocupa el único lugar
+      expect(second.res.statusCode).toBe(200);
+
+      await launcher.launched[0]!.proc.closed; // el primero termina de cerrarse: no debe liberar el lugar del segundo
+      await sleep(30);
+      const third = await open(`${base}${STREAM}`);
+      expect(third.res.statusCode).toBe(503);
+      expect(JSON.parse(third.body().toString()).error.code).toBe('too_many_viewers');
+      expect(launcher.launched).toHaveLength(2);
+      second.req.destroy();
+      await launcher.launched[1]!.proc.closed;
+    });
+
+    it('con procesos que no cierran, al llegar al doble del tope rechaza sin lanzar ffmpeg y deja la línea de métricas', async () => {
+      const { base, launcher, metrics } = await setupWithLogs({ LIVE_MAX_VIEWERS: '1' });
+      launcher.onLaunch = slowToClose(null); // nunca terminan de cerrarse
+
+      const first = await open(`${base}${STREAM}`);
+      first.req.destroy(); // su lugar queda libre, su proceso sigue contando
+      await waitFor(() => launcher.launched[0]!.proc.killed);
+      const second = await open(`${base}${STREAM}`);
+      expect(second.res.statusCode).toBe(200);
+
+      const third = await open(`${base}${STREAM}`); // ya hay 2 procesos: el doble del tope
+      expect(third.res.statusCode).toBe(503);
+      expect(JSON.parse(third.body().toString()).error.code).toBe('too_many_viewers');
+      expect(launcher.launched).toHaveLength(2); // no se lanzó ningún ffmpeg más
+      await waitFor(() => metrics().some((m) => m.outcome === 'too_many_viewers'));
+      expect(metrics().find((m) => m.outcome === 'too_many_viewers')).toMatchObject({ level: 40, bytes: 0, ttfbMs: null });
+
+      second.req.destroy();
+      for (const l of launcher.launched) l.proc.finish(null); // para que el apagado de la prueba no espere
+    });
+
+    it('un proceso que falló antes del video se sigue contando hasta que cierra, y al cerrar vuelve a admitir pedidos', async () => {
+      const { base, launcher } = await setupWithLogs({ LIVE_MAX_VIEWERS: '1', LIVE_FIRST_BYTE_TIMEOUT_MS: '60' });
+      // Nunca entregan video ni cierran: fallan por el tiempo del primer byte y quedan cerrándose.
+      launcher.onLaunch = (proc) => {
+        proc.kill = () => {
+          proc.killed = true;
+        };
+      };
+      expect((await open(`${base}${STREAM}`)).res.statusCode).toBe(502);
+      expect((await open(`${base}${STREAM}`)).res.statusCode).toBe(502);
+      expect(launcher.launched).toHaveLength(2);
+
+      // Sus lugares ya están libres, pero los dos procesos siguen vivos: se alcanzó el doble del tope.
+      const blocked = await open(`${base}${STREAM}`);
+      expect(blocked.res.statusCode).toBe(503);
+      expect(launcher.launched).toHaveLength(2);
+
+      for (const l of launcher.launched) l.proc.finish(null);
+      await Promise.all(launcher.launched.map((l) => l.proc.closed));
+      await sleep(30);
+
+      launcher.onLaunch = (proc) => proc.emitBytes('video');
+      const again = await open(`${base}${STREAM}`);
+      expect(again.res.statusCode).toBe(200);
+      expect(launcher.launched).toHaveLength(3);
+      again.req.destroy();
+    });
   });
 });

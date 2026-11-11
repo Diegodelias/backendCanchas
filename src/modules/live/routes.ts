@@ -12,6 +12,9 @@ const paramsSchema = z.object({ cameraId: z.string().min(1) });
 const CONNECTION_FAILED = () =>
   new AppError(502, 'camera_unreachable', 'No pudimos conectar con la cámara. Probá de nuevo en un momento.');
 
+const TOO_MANY_VIEWERS = () =>
+  new AppError(503, 'too_many_viewers', 'Hay muchos espectadores viendo esta cámara. Probá de nuevo en unos minutos.');
+
 /** Por qué terminó un pedido de stream en vivo (va en la línea de métricas). */
 export type StreamOutcome =
   | 'client_closed'
@@ -112,14 +115,13 @@ export async function liveRoutes(app: FastifyInstance, deps: AppDeps) {
     // Cualquier otro identificador (o parámetro de canal/fecha) se ignora: solo existe la cámara registrada.
     if (cameraId !== camera.id) throw notFound('No encontramos esa cámara.');
 
-    const release = viewers.acquire();
+    // El lugar de un espectador se libera apenas el cliente se va, pero su ffmpeg tarda hasta `STOP_GRACE_MS` en morir.
+    // Para que los procesos contra la cámara sigan acotados (también los que se están cerrando), se rechaza al llegar
+    // al doble del tope de espectadores.
+    const release = active.size >= config.LIVE_MAX_VIEWERS * 2 ? null : viewers.acquire();
     if (!release) {
       startStreamMetrics(app.log, camera.id, viewers.count).finish('too_many_viewers');
-      throw new AppError(
-        503,
-        'too_many_viewers',
-        'Hay muchos espectadores viendo esta cámara. Probá de nuevo en unos minutos.',
-      );
+      throw TOO_MANY_VIEWERS();
     }
 
     const metrics = startStreamMetrics(app.log, camera.id, viewers.count);
@@ -137,13 +139,14 @@ export async function liveRoutes(app: FastifyInstance, deps: AppDeps) {
       }
 
       active.set(proc, metrics);
+      // Un proceso cuenta como activo hasta que termina de cerrarse, también si falló antes del video o el cliente se fue.
+      void proc.closed.then(() => active.delete(proc));
       let started = false;
       let settled = false;
       let stderrText = '';
 
       const cleanup = () => {
         clearTimeout(firstByteTimer);
-        active.delete(proc);
         release();
       };
 
@@ -187,6 +190,8 @@ export async function liveRoutes(app: FastifyInstance, deps: AppDeps) {
         // y se registra antes de matar a ffmpeg para que su cierre no se cuente como un corte.
         if (started && reply.raw.writableFinished) metrics.finish('stream_ended');
         else metrics.finish(started ? 'client_closed' : 'client_closed_before_video');
+        // El lugar queda libre ya: no hay que esperar a que ffmpeg termine de cerrar la sesión con la cámara.
+        release();
         proc.kill();
         if (!started && !settled) {
           settled = true;
